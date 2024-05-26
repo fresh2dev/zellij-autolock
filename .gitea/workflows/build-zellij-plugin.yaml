@@ -1,0 +1,36 @@
+---
+# src: https://raw.githubusercontent.com/dj95/zjstatus/main/.github/workflows/release.yml
+
+name: 'Build'
+on:
+  push:
+    branches:
+      - '*'
+    tags:
+      - 'v?[0-9]+.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: build-release
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: '1.76.0'
+          profile: minimal
+          override: true
+          target: wasm32-wasi
+
+      - name: Build release binary
+        run: cargo build --release
