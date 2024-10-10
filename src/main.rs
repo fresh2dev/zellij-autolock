@@ -117,10 +117,7 @@ impl ZellijPlugin for State {
                             term_cmd: None,
                         };
 
-                        run_command(
-                            &["zellij", "action", "list-clients"],
-                            BTreeMap::from([("action".to_owned(), "list-clients".to_owned())]),
-                        );
+                        list_clients();
                     }
                 }
             }
