@@ -19,7 +19,11 @@ Here is a demonstration of how you can seamlessly navigate through Zellij panes 
 
 Notice how the Zellij mode ( "Normal" or "Locked" in the top-right corner ) automatically toggles depending which process is running within the focused Zellij pane. This allows you to use the same mappings ( `Ctrl+h/j/k/l` ) to navigate between Zellij panes, Vim windows, FZF results, and more.
 
-## Install / Config
+## Install
+
+Download the wasm file from the [releases page](https://github.com/fresh2dev/zellij-autolock/releases). Save it to your Zellij config path (e.g., `~/.config/zellij/plugins/zellij-autolock.wasm`). You will reference this path when defining the plugin in your Zellij config.
+
+## Config
 
 > Note: Zellij >= 0.40.1 is required.
 
@@ -30,7 +34,7 @@ I use the following Zellij config to intercept the "Enter" key, pass it through,
 ```kdl
 plugins {
     // Define the "autolock" plugin.
-    autolock location="https://github.com/fresh2dev/zellij-autolock/releases/latest/download/zellij-autolock.wasm" {
+    autolock location="file:~/.config/zellij/plugins/zellij-autolock.wasm" {
         triggers "nvim|vim"  // Lock when any open these programs open. They are expected to unlock themselves when closed (e.g., using zellij.vim plugin).
         watch_triggers "fzf|zoxide|atuin"  // Lock when any of these open and monitor until closed.
         watch_interval "1.0"  // When monitoring, check every X seconds.
@@ -54,10 +58,22 @@ keybinds {
     shared_except "locked" {
         // Put keybindings here if they conflict with Vim or others.
 
-        bind "Ctrl h" { MoveFocus "Left"; }
-        bind "Ctrl l" { MoveFocus "Right"; }
-        bind "Ctrl j" { MoveFocus "Down"; }
-        bind "Ctrl k" { MoveFocus "Up"; }
+        bind "Ctrl h" {
+            MoveFocus "Left";
+            // OR: MoveFocusOrTab "Left";
+        }
+        bind "Ctrl l" {
+            MoveFocus "Right";
+            // OR: MoveFocusOrTab "Right";
+        }
+        bind "Ctrl j" {
+            MoveFocus "Down";
+            // OR: MoveFocusOrTab "Down";
+        }
+        bind "Ctrl k" {
+            MoveFocus "Up";
+            // OR: MoveFocusOrTab "Up";
+        }
 
         // bind "Ctrl d" { HalfPageScrollDown; }
         // bind "Ctrl u" { HalfPageScrollUp; }
