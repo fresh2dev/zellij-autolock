@@ -176,7 +176,10 @@ impl ZellijPlugin for State {
                                 self.latest_mode
                             };
 
-                        if self.latest_mode != target_input_mode {
+                        if self.latest_mode != target_input_mode
+                            && (self.latest_mode == InputMode::Locked
+                                || self.latest_mode == InputMode::Normal)
+                        {
                             switch_to_input_mode(&target_input_mode);
                         }
 
