@@ -1,52 +1,21 @@
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
-
-/// Extracts the current running command from
-/// the CLI command `zellij action list-clients`.
-/// src: https://github.com/hiasr/vim-zellij-navigator/blob/main/src/main.rs
-fn term_command_from_client_list(cl: String) -> Option<String> {
-    let clients = cl.split('\n').skip(1).collect::<Vec<&str>>();
-    if clients.is_empty() {
-        return None;
-    }
-
-    let columns = clients[0].split_whitespace().collect::<Vec<&str>>();
-    if columns.len() < 3 {
-        return None;
-    }
-
-    let is_terminal = columns[1].starts_with("terminal");
-    let no_command = columns[2] == "N/A";
-    if !is_terminal || no_command {
-        return None;
-    }
-
-    let command = columns[2].split('/').last()?;
-    return Some(command.to_string());
-}
-
-fn list_clients() {
-    run_command(
-        &["zellij", "action", "list-clients"],
-        BTreeMap::from([("action".to_owned(), "list-clients".to_owned())]),
-    );
-}
+use zellij_tile::shim::list_clients;
 
 struct TabPane {
     tab_pos: usize,
     pane_id: u32,
-    term_cmd: Option<String>,
 }
 
 struct State {
     permissions_granted: bool,
     lock_trigger_cmds: Vec<String>,
-    lock_watch_cmds: Vec<String>,
-    watch_interval: f64,
-    timer_active: bool,
+    reaction_seconds: f64,
     timer_scheduled: bool,
     latest_tab_pane: TabPane,
     latest_mode: InputMode,
+    latest_running_command: String,
+    print_to_log: bool,
 }
 
 impl Default for State {
@@ -54,16 +23,15 @@ impl Default for State {
         Self {
             permissions_granted: false,
             lock_trigger_cmds: vec!["vim".to_string(), "nvim".to_string()],
-            lock_watch_cmds: vec![],
-            watch_interval: 1.0,
-            timer_active: false,
+            reaction_seconds: 0.3,
             timer_scheduled: false,
             latest_tab_pane: TabPane {
                 tab_pos: usize::MAX,
                 pane_id: u32::MAX,
-                term_cmd: None,
             },
             latest_mode: InputMode::Normal,
+            latest_running_command: "".to_string(),
+            print_to_log: false,
         }
     }
 }
@@ -73,16 +41,17 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         request_permission(&[
-            PermissionType::RunCommands,
+            // PermissionType::RunCommands,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadApplicationState,
         ]);
         subscribe(&[
-            EventType::PermissionRequestResult,
+            EventType::InputReceived,
+            EventType::ListClients,
             EventType::ModeUpdate,
-            EventType::TabUpdate,
             EventType::PaneUpdate,
-            EventType::RunCommandResult,
+            EventType::PermissionRequestResult,
+            EventType::TabUpdate,
             EventType::Timer,
         ]);
         if self.permissions_granted {
@@ -105,19 +74,20 @@ impl ZellijPlugin for State {
 
             Event::ModeUpdate(mode_info) => {
                 self.latest_mode = mode_info.mode;
+                self.start_timer();
+            }
+
+            Event::InputReceived => {
+                self.start_timer();
             }
 
             Event::TabUpdate(tab_info) => {
                 if let Some(tab) = get_focused_tab(&tab_info) {
                     if tab.position != self.latest_tab_pane.tab_pos {
-                        // eprintln!("Tab focus changed!");
                         self.latest_tab_pane = TabPane {
                             tab_pos: tab.position,
                             pane_id: u32::MAX,
-                            term_cmd: None,
                         };
-
-                        list_clients();
                     }
                 }
             }
@@ -127,14 +97,10 @@ impl ZellijPlugin for State {
                     get_focused_pane(self.latest_tab_pane.tab_pos, &pane_manifest).clone();
 
                 if let Some(pane) = focused_pane {
-                    if pane.id != self.latest_tab_pane.pane_id
-                        || pane.terminal_command != self.latest_tab_pane.term_cmd
-                    {
-                        // eprintln!("Pane focus changed!");
+                    if pane.id != self.latest_tab_pane.pane_id {
                         self.latest_tab_pane = TabPane {
                             tab_pos: self.latest_tab_pane.tab_pos,
                             pane_id: pane.id,
-                            term_cmd: pane.terminal_command,
                         };
 
                         list_clients();
@@ -142,50 +108,45 @@ impl ZellijPlugin for State {
                 }
             }
 
-            Event::RunCommandResult(_exit_code, stdout, _stderr, context) => {
-                if context.get("action") == Some(&"list-clients".to_owned()) {
-                    let stdout = String::from_utf8(stdout).unwrap();
-                    if stdout.len() == 0 {
-                        // The `list-clients` command sometimes bugs out and returns nothing.
-                        // When this happens, activate the timer to repeat another cycle.
-                        self.timer_active = true;
-                    } else {
-                        // eprintln!("list-clients output: {}", stdout);
+            Event::ListClients(clients) => {
+                if let Some(current_client) = clients
+                    .iter()
+                    .find(|client| client.is_current_client && !client.running_command.is_empty())
+                {
+                    let running_command = current_client.running_command.trim().to_string();
 
-                        let pane_cmd = if let Some(cmd) = term_command_from_client_list(stdout) {
-                            cmd.clone()
-                        // } else if let Some(cmd) = &self.latest_tab_pane.term_cmd {
-                        //     cmd.split_whitespace().next().unwrap_or("").to_string()
-                        } else {
-                            "".to_string()
-                        };
-
-                        eprintln!("Detected command in pane: {}", pane_cmd);
-
-                        let is_watched_cmd = self.lock_watch_cmds.contains(&pane_cmd);
-
-                        let target_input_mode =
-                            if is_watched_cmd || self.lock_trigger_cmds.contains(&pane_cmd) {
-                                InputMode::Locked
-                            } else if self.latest_mode == InputMode::Locked {
-                                InputMode::Normal
-                            } else {
-                                self.latest_mode
-                            };
-
-                        if self.latest_mode != target_input_mode
-                            && (self.latest_mode == InputMode::Locked
-                                || self.latest_mode == InputMode::Normal)
-                        {
-                            switch_to_input_mode(&target_input_mode);
-                        }
-
-                        self.timer_active = is_watched_cmd;
+                    if self.print_to_log {
+                        eprintln!("Detected command in pane: {}!", running_command);
                     }
 
-                    if self.timer_active && !self.timer_scheduled {
-                        set_timeout(self.watch_interval);
-                        self.timer_scheduled = true;
+                    let mut is_trigger_cmd = false;
+
+                    if running_command != "N/A" {
+                        let running_command_base =
+                            running_command.split_whitespace().collect::<Vec<_>>()[0].to_string();
+
+                        is_trigger_cmd = self.lock_trigger_cmds.contains(&running_command)
+                            || self.lock_trigger_cmds.contains(&running_command_base);
+                    }
+
+                    let target_input_mode = if is_trigger_cmd {
+                        InputMode::Locked
+                    } else if self.latest_mode == InputMode::Locked {
+                        InputMode::Normal
+                    } else {
+                        self.latest_mode
+                    };
+
+                    if self.latest_mode != target_input_mode
+                        && (self.latest_mode == InputMode::Locked
+                            || self.latest_mode == InputMode::Normal)
+                    {
+                        switch_to_input_mode(&target_input_mode);
+                    }
+
+                    if running_command != self.latest_running_command {
+                        self.latest_running_command = running_command;
+                        self.start_timer();
                     }
                 }
             }
@@ -202,6 +163,7 @@ impl ZellijPlugin for State {
 
     fn pipe(&mut self, _pipe_message: PipeMessage) -> bool {
         list_clients();
+        self.start_timer();
         return false; // No need to render UI.
     }
 
@@ -216,14 +178,17 @@ impl State {
                 .map(|s| s.trim().to_string())
                 .collect();
         }
-        if let Some(lock_watch_cmds) = configuration.get("watch_triggers") {
-            self.lock_watch_cmds = lock_watch_cmds
-                .split('|')
-                .map(|s| s.trim().to_string())
-                .collect();
+        if let Some(reaction_seconds) = configuration.get("reaction_seconds") {
+            self.reaction_seconds = reaction_seconds.parse::<f64>().unwrap();
         }
-        if let Some(watch_interval) = configuration.get("watch_interval") {
-            self.watch_interval = watch_interval.parse::<f64>().unwrap();
+        if let Some(print_to_log) = configuration.get("print_to_log") {
+            self.print_to_log = matches!(print_to_log.trim(), "true" | "t" | "y" | "1");
+        }
+    }
+    fn start_timer(&mut self) {
+        if !self.timer_scheduled {
+            set_timeout(self.reaction_seconds);
+            self.timer_scheduled = true;
         }
     }
 }

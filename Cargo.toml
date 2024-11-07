@@ -5,4 +5,4 @@ authors = ["Donald Mellenbruch"]
 edition = "2018"
 
 [dependencies]
-zellij-tile = "0.40.1"
+zellij-tile = "0.41.1"
