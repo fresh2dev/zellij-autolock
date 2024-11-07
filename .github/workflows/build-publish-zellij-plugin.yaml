@@ -27,10 +27,10 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: '1.76.0'
+          toolchain: '1.81.0'
           profile: minimal
           override: true
-          target: wasm32-wasi
+          target: wasm32-wasip1
 
       - name: Build release binary
         run: cargo build --release
@@ -56,6 +56,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/wasm32-wasi/release/zellij-autolock.wasm
+          asset_path: ./target/wasm32-wasip1/release/zellij-autolock.wasm
           asset_name: zellij-autolock.wasm
           asset_content_type: application/octet-stream

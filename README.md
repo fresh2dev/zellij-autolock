@@ -1,10 +1,10 @@
 # zellij-autolock
 
-*zellij-autolock* is an experimental Zellij plugin that automatically switches between Zellij's "Normal" and "Locked" modes depending on the process running within the focused Zellij pane.
+*zellij-autolock* is an Zellij plugin that automatically switches between Zellij's "Normal" and "Locked" modes by inspecting the command running within the focused Zellij pane.
 
 I built *zellij-autolock* in pursuit of seamless navigation between Zellij panes and Vim windows. It works well for Vim, Neovim, and with other CLI applications that use keymaps that conflict with Zellij's keymaps including Helix, FZF, and more.
 
-> Note: When using with [Neo]vim, you'll also want to install this Vim plugin: [***zellij.vim***](https://github.com/fresh2dev/zellij.vim)
+> Note: When using with \[Neo\]vim, you'll also want to install this companion Vim plugin: [***zellij.vim***](https://github.com/fresh2dev/zellij.vim)
 
 ## Demo
 
@@ -23,56 +23,61 @@ Notice how the Zellij mode ( "Normal" or "Locked" in the top-right corner ) auto
 
 Download the wasm file from the [releases page](https://github.com/fresh2dev/zellij-autolock/releases). Save it to your Zellij config path (e.g., `~/.config/zellij/plugins/zellij-autolock.wasm`). You will reference this path when defining the plugin in your Zellij config.
 
+> Note: Zellij >= 0.41 is also required.
+
 ## Config
 
-> Note: Zellij >= 0.40.1 is required.
+This is a "headless" Zellij plugin; it has no UI. Once activated, this plugin responds to Zellij events ( `TabUpdate`, `PaneUpdate`, and `InputReceived` ) by examining the process running within the focused Zellij pane. If the running process is in set of `triggers`, Zellij is then set to "Locked" mode. Otherwise it is unlocked (i.e., set to "Normal").
 
-This is a "headless" Zellij plugin; it has no UI. It is activated by pressing the `Enter` key in Zellij's "Normal" mode. Once activated, this plugin responds to Zellij events ( `TabUpdate` and `PaneUpdate` ) by examining the process running within the focused Zellij pane. If the running process is in either list `trigger` or `watch_trigger`, Zellij is then set to "Locked" mode. Otherwise it is unlocked (i.e., set to "Normal").
+> Note: this plugin reacts to user input events, but it does not (and cannot) read user input.
 
-I use the following Zellij config to intercept the "Enter" key, pass it through, then launch this plugin -- (an excerpt from [my dotfiles](https://github.com/fresh2dev/dotfiles)):
+### Example `config.kdl`
 
 ```kdl
 plugins {
     // Define the "autolock" plugin.
     autolock location="file:~/.config/zellij/plugins/zellij-autolock.wasm" {
-        triggers "nvim|vim"  // Lock when any open these programs open. They are expected to unlock themselves when closed (e.g., using zellij.vim plugin).
-        watch_triggers "fzf|zoxide|atuin"  // Lock when any of these open and monitor until closed.
-        watch_interval "1.0"  // When monitoring, check every X seconds.
+        // Lock when any open these programs open.
+        triggers "nvim|vim|git|fzf|zoxide|atuin"
+        // Reaction to input occurs after this many seconds. (default=0.3)
+        // (An existing scheduled reaction prevents additional reactions.)
+        reaction_seconds "0.3"
+        // Print to Zellij log? (default=false)
+        print_to_log true
     }
     //...
 }
+// Load this "headless" plugin on start.
+load_plugins {
+    autolock
+}
 keybinds {
     normal {
-        bind "Enter" {  // Intercept `Enter`.
-            WriteChars "\u{000D}";  // Passthru `Enter`.
-            MessagePlugin "autolock" {};  // Activate the autolock plugin.
+        // Intercept `Enter`.
+        bind "Enter" {
+            // Passthru `Enter`.
+            WriteChars "\u{000D}";
+            // Invoke autolock to immediately assess proper lock state.
+            // (This provides a snappier experience compared to
+            // solely relying on `reaction_seconds` to elapse.)
+            MessagePlugin "autolock" {};
         }
-        // Note: You may want to bind/intercept/relay other keys to activate this plugin,
-        // like `Ctrl+r` which opens shell history in Atuin / FZF. For example:
-        // bind "Ctrl r" {  // Intercept `Ctrl+r`.
-        //     WriteChars "\u{0012}";  // Passthru `Ctrl+r`
-        //     MessagePlugin "autolock" {};  // Activate the autolock plugin.
-        // }
     }
     //...
     shared_except "locked" {
         // Put keybindings here if they conflict with Vim or others.
 
         bind "Ctrl h" {
-            MoveFocus "Left";
-            // OR: MoveFocusOrTab "Left";
+            MoveFocusOrTab "Left";
         }
         bind "Ctrl l" {
-            MoveFocus "Right";
-            // OR: MoveFocusOrTab "Right";
+            MoveFocusOrTab "Right";
         }
         bind "Ctrl j" {
             MoveFocus "Down";
-            // OR: MoveFocusOrTab "Down";
         }
         bind "Ctrl k" {
             MoveFocus "Up";
-            // OR: MoveFocusOrTab "Up";
         }
 
         // bind "Ctrl d" { HalfPageScrollDown; }
@@ -87,27 +92,23 @@ keybinds {
 }
 ```
 
-The `triggers` setting allows a pipe-separated (`|`) list of CLI commands that will trigger Zellij's "Locked" mode.
-
-This plugin **can lock** Zellij when it encounters one of these commands, but it **cannot unlock** when the command exits. So, commands provided to `triggers` are expected to unlock Zellij on close. In the context of [Neo]vim, this is made possible with the Vim plugin [zellij.vim](https://github.com/fresh2dev/zellij.vim).
-
-The `watch_triggers` setting accounts for CLI commands that have no way of unlocking Zellij on close. When *zellij-autolock* encounters one of these commands, it puts Zellij into "Locked" mode and starts a timer that evaluates every `<watch_interval>` seconds. When the command exits, Zellij will unlock after the timer performs a cycle. This is intended for transient commands that benefit from `Ctrl+h/j/k/l` nav, like `fzf`, `zoxide`, and `atuin`.
+The `triggers` setting allows a pipe-separated (`|`) list of CLI commands that will trigger Zellij's "Locked" mode. This can be either a base command name (e.g., `vim`) or a command with flags (e.g., `nix develop -c vim`).
 
 ## Troubleshooting
 
-If you experience issues with the plugin, first try opening a fresh Zellij session. If that doesn't work, clear the Zellij cache and restart Zellij (`rm -rf ~/.cache/zellij` on Linux; `~/Library/Caches/org.Zellij-Contributors.Zellij` on macOS)
+If you experience issues with the plugin, first try opening a fresh Zellij session. If that doesn't work, clear the Zellij cache and restart Zellij (`rm -rf ~/.cache/zellij` on Linux; `rm -rf ~/Library/Caches/org.Zellij-Contributors.Zellij` on macOS)
 
-[Zellij logs](https://zellij.dev/documentation/plugin-api-logging) are viewable here (on Linux):
+[Zellij logs](https://zellij.dev/documentation/plugin-api-logging) are viewable here on Linux:
 
 ```sh
 tail -f /tmp/zellij-$(id -u)/zellij-log/zellij.log
 ```
 
-## Future
+On MacOS, you'll have to hunt for it in the directory `/var/folders`. This is what I use to easily find and tail the Zellij log on MacOS:
 
-Today, this plugin uses Zellij CLI commands to determine the process running within the focused Zellij pane (there is a report of terminal flashing [#3](https://github.com/fresh2dev/zellij-autolock/issues/3) related to this implementation). When it is possible to use the Zellij API to make the distinction, I plan to refactor.
-
-This project is experimental and exists as a proof-of-concept. This is my first round of writing a Zellij plugin, or a project in Rust for that matter. If this project were to thrive, it would not be without community contributions. If this plugin solves [the Zellij / Vim navigation problem (#967)](https://github.com/zellij-org/zellij/issues/967), I dream that it'd just be baked into the Zellij project.
+```sh
+find /var/folders -type f -name 'zellij.log' -exec tail -f {} \; 2>/dev/null
+```
 
 ## Shoutouts
 
