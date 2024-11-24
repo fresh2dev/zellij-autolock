@@ -4,7 +4,7 @@
 
 I built *zellij-autolock* in pursuit of seamless navigation between Zellij panes and Vim windows. It works well for Vim, Neovim, and with other CLI applications that use keymaps that conflict with Zellij's keymaps including Helix, FZF, and more.
 
-> Note: When using with \[Neo\]vim, you'll also want to install this companion Vim plugin: [***zellij.vim***](https://github.com/fresh2dev/zellij.vim)
+> Note: When using with [Neo]vim, you'll also want to install this companion Vim plugin: [***zellij.vim***](https://github.com/fresh2dev/zellij.vim)
 
 ## Demo
 
@@ -37,6 +37,8 @@ This is a "headless" Zellij plugin; it has no UI. Once activated, this plugin re
 plugins {
     // Define the "autolock" plugin.
     autolock location="file:~/.config/zellij/plugins/zellij-autolock.wasm" {
+        // Enabled at start?
+        is_enabled true
         // Lock when any open these programs open.
         triggers "nvim|vim|git|fzf|zoxide|atuin"
         // Reaction to input occurs after this many seconds. (default=0.3)
@@ -52,6 +54,7 @@ load_plugins {
     autolock
 }
 keybinds {
+    // Keybindings specific to 'Normal' mode.
     normal {
         // Intercept `Enter`.
         bind "Enter" {
@@ -62,10 +65,36 @@ keybinds {
             // solely relying on `reaction_seconds` to elapse.)
             MessagePlugin "autolock" {};
         }
+        //...
     }
-    //...
+    // Keybindings specific to 'Locked' mode.
+    locked {
+        bind "Alt z" {
+            // Disable the autolock plugin.
+            MessagePlugin "autolock" {payload "disable";};
+            // Unlock Zellij.
+            SwitchToMode "Normal";
+        }
+        //...
+    }
+    // Keybindings shared across all modes.
+    shared {
+        bind "Alt Shift z" {
+            // Enable the autolock plugin.
+            MessagePlugin "autolock" {payload "enable";};
+        }
+        //...
+    }
+    // Keybindings shared across all modes, except 'Locked'.
     shared_except "locked" {
         // Put keybindings here if they conflict with Vim or others.
+
+        bind "Alt z" {
+            // Disable the autolock plugin.
+            MessagePlugin "autolock" {payload "disable";};
+            // Lock Zellij.
+            SwitchToMode "Locked";
+        }
 
         bind "Ctrl h" {
             MoveFocusOrTab "Left";
@@ -92,7 +121,14 @@ keybinds {
 }
 ```
 
-The `triggers` setting allows a pipe-separated (`|`) list of CLI commands that will trigger Zellij's "Locked" mode. This can be either a base command name (e.g., `vim`) or a command with flags (e.g., `nix develop -c vim`).
+The `triggers` setting allows a pipe-separated (`|`) list of CLI commands that will trigger Zellij's "Locked" mode.
+
+When `MessagePlugin` is called without a payload, immediate assessment of the currently running command occurs. This is useful in conjunction with the `Enter` key to provide a snappier experience. Additionally, a payload can be provided to enable, disable, or toggle the autolock mechanism.
+
+- `MessagePlugin "autolock" {};` \<- immediately trigger an assessment of the current pane.
+- `MessagePlugin "autolock" {payload "disable"};` \<- disable autolock
+- `MessagePlugin "autolock" {payload "enable"};` \<- enable autolock
+- `MessagePlugin "autolock" {payload "toggle"};` \<- toggle autolock
 
 ## Troubleshooting
 

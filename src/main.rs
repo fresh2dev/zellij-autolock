@@ -8,6 +8,7 @@ struct TabPane {
 }
 
 struct State {
+    is_enabled: bool,
     permissions_granted: bool,
     lock_trigger_cmds: Vec<String>,
     reaction_seconds: f64,
@@ -21,6 +22,7 @@ struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            is_enabled: true,
             permissions_granted: false,
             lock_trigger_cmds: vec!["vim".to_string(), "nvim".to_string()],
             reaction_seconds: 0.3,
@@ -109,44 +111,46 @@ impl ZellijPlugin for State {
             }
 
             Event::ListClients(clients) => {
-                if let Some(current_client) = clients
-                    .iter()
-                    .find(|client| client.is_current_client && !client.running_command.is_empty())
-                {
-                    let running_command = current_client.running_command.trim().to_string();
+                if self.is_enabled {
+                    if let Some(current_client) = clients.iter().find(|client| {
+                        client.is_current_client && !client.running_command.is_empty()
+                    }) {
+                        let running_command = current_client.running_command.trim().to_string();
 
-                    if self.print_to_log {
-                        eprintln!("Detected command in pane: {}!", running_command);
-                    }
+                        if self.print_to_log {
+                            eprintln!("Detected command in pane: {}", running_command);
+                        }
 
-                    let mut is_trigger_cmd = false;
+                        let mut is_trigger_cmd = false;
 
-                    if running_command != "N/A" {
-                        let running_command_base =
-                            running_command.split_whitespace().collect::<Vec<_>>()[0].to_string();
+                        if running_command != "N/A" {
+                            let running_command_base =
+                                running_command.split_whitespace().collect::<Vec<_>>()[0]
+                                    .to_string();
 
-                        is_trigger_cmd = self.lock_trigger_cmds.contains(&running_command)
-                            || self.lock_trigger_cmds.contains(&running_command_base);
-                    }
+                            is_trigger_cmd = self.lock_trigger_cmds.contains(&running_command)
+                                || self.lock_trigger_cmds.contains(&running_command_base);
+                        }
 
-                    let target_input_mode = if is_trigger_cmd {
-                        InputMode::Locked
-                    } else if self.latest_mode == InputMode::Locked {
-                        InputMode::Normal
-                    } else {
-                        self.latest_mode
-                    };
+                        let target_input_mode = if is_trigger_cmd {
+                            InputMode::Locked
+                        } else if self.latest_mode == InputMode::Locked {
+                            InputMode::Normal
+                        } else {
+                            self.latest_mode
+                        };
 
-                    if self.latest_mode != target_input_mode
-                        && (self.latest_mode == InputMode::Locked
-                            || self.latest_mode == InputMode::Normal)
-                    {
-                        switch_to_input_mode(&target_input_mode);
-                    }
+                        if self.latest_mode != target_input_mode
+                            && (self.latest_mode == InputMode::Locked
+                                || self.latest_mode == InputMode::Normal)
+                        {
+                            switch_to_input_mode(&target_input_mode);
+                        }
 
-                    if running_command != self.latest_running_command {
-                        self.latest_running_command = running_command;
-                        self.start_timer();
+                        if running_command != self.latest_running_command {
+                            self.latest_running_command = running_command;
+                            self.start_timer();
+                        }
                     }
                 }
             }
@@ -161,9 +165,24 @@ impl ZellijPlugin for State {
         return false; // No need to render UI.
     }
 
-    fn pipe(&mut self, _pipe_message: PipeMessage) -> bool {
-        list_clients();
-        self.start_timer();
+    fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if let Some(payload) = pipe_message.payload {
+            let action = payload.to_string();
+
+            if action == "enable" {
+                self.is_enabled = true
+            } else if action == "disable" {
+                self.is_enabled = false
+            } else if action == "toggle" {
+                self.is_enabled = !self.is_enabled
+            }
+        }
+
+        if self.is_enabled {
+            list_clients();
+            self.start_timer();
+        }
+
         return false; // No need to render UI.
     }
 
@@ -172,6 +191,9 @@ impl ZellijPlugin for State {
 
 impl State {
     fn load_configuration(&mut self, configuration: BTreeMap<String, String>) {
+        if let Some(is_enabled) = configuration.get("is_enabled") {
+            self.is_enabled = matches!(is_enabled.trim(), "true" | "t" | "y" | "1");
+        }
         if let Some(lock_trigger_cmds) = configuration.get("triggers") {
             self.lock_trigger_cmds = lock_trigger_cmds
                 .split('|')
@@ -186,7 +208,7 @@ impl State {
         }
     }
     fn start_timer(&mut self) {
-        if !self.timer_scheduled {
+        if self.is_enabled && !self.timer_scheduled {
             set_timeout(self.reaction_seconds);
             self.timer_scheduled = true;
         }
