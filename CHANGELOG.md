@@ -2,9 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1 - 2024-11-24
+
+**Full Changelog**: https://github.com/fresh2dev/zellij-autolock/compare/0.2.0...0.2.1
+
+### :clap: Features
+
+- Allow autolock to be toggled via pipes
+
 ## 0.2.0 - 2024-11-07
 
-**Full Changelog**: https://github.com///compare/0.1.1...0.2.0
+**Full Changelog**: https://github.com/fresh2dev/zellij-autolock/compare/0.1.1...0.2.0
 
 This release features a major rewrite given the recently release Zellij v0.41 and its enhancements to the native Zellij Rust API.
 
@@ -31,7 +39,7 @@ load_plugins {
 
 ## 0.1.1 - 2024-10-10
 
-**Full Changelog**: https://github.com///compare/0.1.0...0.1.1
+**Full Changelog**: https://github.com/fresh2dev/zellij-autolock/compare/0.1.0...0.1.1
 
 ### :fist: Fixes
 
