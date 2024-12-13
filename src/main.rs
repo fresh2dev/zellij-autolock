@@ -124,12 +124,15 @@ impl ZellijPlugin for State {
                         let mut is_trigger_cmd = false;
 
                         if running_command != "N/A" {
-                            let running_command_base =
+                            let running_command_exe =
                                 running_command.split_whitespace().collect::<Vec<_>>()[0]
+                                    .split('/')
+                                    .last()
+                                    .unwrap_or("")
                                     .to_string();
 
                             is_trigger_cmd = self.lock_trigger_cmds.contains(&running_command)
-                                || self.lock_trigger_cmds.contains(&running_command_base);
+                                || self.lock_trigger_cmds.contains(&running_command_exe);
                         }
 
                         let target_input_mode = if is_trigger_cmd {
