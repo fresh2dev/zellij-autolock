@@ -1,16 +1,16 @@
 ---
-name: "\U0001F41B Bug Report"
+name: 🐛 Bug Report
 about: If something isn't working as expected.
 title: ''
 labels: bug
 assignees: ''
 ---
 
-`zellij --version`: ___
+`zellij --version`: \_\_\_
 
-Terminal version: ___
+Terminal version: \_\_\_
 
-Operating system: ___
+Operating system: \_\_\_
 
 ## Issue description
 
