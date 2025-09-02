@@ -5,4 +5,10 @@ authors = ["Donald Mellenbruch"]
 edition = "2018"
 
 [dependencies]
-zellij-tile = "0.41.2"
+regex-lite = "0.1.9"
+zellij-tile = "0.45.1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
