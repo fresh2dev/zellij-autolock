@@ -6,10 +6,6 @@ labels: bug
 assignees: ''
 ---
 
-`zellij --version`: ___
-
-Terminal version: ___
-
 Operating system: ___
 
 ## Issue description
