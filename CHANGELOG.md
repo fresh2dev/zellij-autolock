@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - Unreleased
+
+**Full Changelog**: https://github.com/fresh2dev/zellij-autolock/compare/0.2.2...0.3.0
+
+### :clap: Features
+
+- *Breaking* - Replace `triggers` with `lock_regex` and `ignore_regex`
+- *Breaking* - Require Zellij >= 0.45
+
+### Upgrading from 0.2
+
+0.3 replaces the `triggers` option with two regular expressions, `lock_regex` and `ignore_regex`.
+
+Previously, v0.2 on featured `triggers` and the emphasis was on locking when specific processes launched.
+
+As my list of exceptions continued to grow, I realized it would be better to enter locked mode for *every* process launched inside Zellij, and only unlock the few things that should stay unlocked.
+
+Introducing `lock_regex` and `ignore_regex` in favor of merely `triggers` allows for a more flexible configuration.
+
+- **0.2 was an allowlist.** Zellij stayed in Normal mode unless a specific, named process (`vim`, `fzf`, ...) was launched. Every program that should own the keyboard had to be enumerated in `triggers`.
+- **0.3 prefers to lock.** The recommended setup is `lock_regex ".*"`, which locks for *every* process launched inside Zellij, combined with an `ignore_regex` that names the few things that should stay unlocked: your shells and prompt tooling. Any interactive program gets the keyboard without being listed.
+
+The old behavior is still available by using `lock_regex` alone as an allowlist, and the two regexes can be combined in any way you like. `ignore_regex` always wins.
+
+| 0.2 | 0.3 |
+|-----|-----|
+| `triggers "nvim\|vim\|git\|fzf"` | `lock_regex "^(nvim\|vim\|git\|fzf)$"` |
+| exact match on the command or executable name | regex match on the full command line **and** the executable name |
+| no way to exclude a command | `ignore_regex` overrides `lock_regex` |
+
+`triggers` still works in 0.3.x (it is wrapped as `^(...)$` and OR-ed with `lock_regex`), but it is deprecated and will be removed in the next minor release. Migrate at your convenience.
+
+Other changes worth knowing:
+
+- Requires Zellij >= 0.45 (0.2 required >= 0.41). On older Zellij, stay on 0.2.2.
+- Surrounding parentheses are stripped from the executable name, so fish's `(atuin)` is seen as `atuin`.
+- The plugin remembers the last command it saw in each pane and only re-evaluates when it changes.
+- Log lines renamed: `Trigger commands:` is now `Lock Commands:` and `Ignore Commands:`.
+
 ## 0.2.2 - 2024-12-13
 
 **Full Changelog**: https://github.com/fresh2dev/zellij-autolock/compare/0.2.1...0.2.2
