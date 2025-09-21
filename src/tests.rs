@@ -1639,7 +1639,7 @@ mod pipes {
 
     #[test]
     fn empty_pipe_does_not_undo_a_manual_mode_change() {
-        // The README binds `Enter` to an empty pipe. Pressing it in an editor
+        // 0.2 configs bind `Enter` to an empty pipe. Pressing it in an editor
         // the user unlocked by hand must not lock again.
         let mut host = MockHost::default();
         host.focus(PANE_1).running(PANE_1, &["zsh"]);
