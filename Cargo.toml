@@ -1,8 +1,8 @@
 [package]
 name = "zellij-autolock"
-version = "0.1.0"
+version = "0.3.3"
 authors = ["Donald Mellenbruch"]
 edition = "2018"
 
 [dependencies]
-zellij-tile = "0.41.2"
+zellij-tile = "0.43"

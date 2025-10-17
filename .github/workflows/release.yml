@@ -1,0 +1,38 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - "v[0-9]+.*"
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    release:
+        name: Release
+        # strategy:
+        #     matrix:
+        #         platform:
+        #             - name: wasm32-wasip1
+        #               target: wasm32-wasip1
+        #               os: ubuntu-latest
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+            - name: Install Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  target: wasm32-wasip1
+            - name: Build executable
+              uses: actions-rs/cargo@v1
+              with:
+                  command: build
+                  args: --release --target wasm32-wasip1 --locked
+            - name: Create GitHub Release
+              uses: ncipollo/release-action@v1
+              with:
+                  tag: ${{ github.ref_name }}
+                  name: Release ${{ github.ref_name }}
+                  artifacts: target/wasm32-wasip1/release/zellij-autolock.wasm
+                  immutableCreate: true

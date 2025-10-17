@@ -116,14 +116,13 @@ impl ZellijPlugin for State {
                         client.is_current_client && !client.running_command.is_empty()
                     }) {
                         let running_command = current_client.running_command.trim().to_string();
-
                         let mut is_trigger_cmd = false;
 
                         if running_command != "N/A" {
                             let running_command_exe =
                                 running_command.split_whitespace().collect::<Vec<_>>()[0]
                                     .split('/')
-                                    .last()
+                                    .next_back()
                                     .unwrap_or("")
                                     .to_string();
 
@@ -149,17 +148,17 @@ impl ZellijPlugin for State {
                         } else {
                             self.latest_mode
                         };
-
+                        if running_command != self.latest_running_command {
+                            self.latest_running_command = running_command;
+                            self.start_timer();
+                        } else {
+                            return false; // No need to render UI.
+                        }
                         if self.latest_mode != target_input_mode
                             && (self.latest_mode == InputMode::Locked
                                 || self.latest_mode == InputMode::Normal)
                         {
                             switch_to_input_mode(&target_input_mode);
-                        }
-
-                        if running_command != self.latest_running_command {
-                            self.latest_running_command = running_command;
-                            self.start_timer();
                         }
                     }
                 }
@@ -172,7 +171,7 @@ impl ZellijPlugin for State {
 
             _ => {}
         }
-        return false; // No need to render UI.
+        false // No need to render UI.
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
@@ -202,7 +201,7 @@ impl ZellijPlugin for State {
             self.start_timer();
         }
 
-        return false; // No need to render UI.
+        false // No need to render UI.
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {}
