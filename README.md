@@ -1,6 +1,8 @@
 # zellij-autolock
 
-*zellij-autolock* is an Zellij plugin that automatically switches between Zellij's "Normal" and "Locked" modes by inspecting the command running within the focused Zellij pane.
+> **This fork** fixes compatibility with zellij ≥ 0.44.0. The upstream plugin ([fresh2dev/zellij-autolock](https://github.com/fresh2dev/zellij-autolock)) broke in zellij 0.44.0 due to a client/server architecture refactor — the `list_clients()` API no longer returns the running command, so trigger programs like nvim/vim/fzf were never detected. This fork migrates to the `CommandChanged` event API introduced in zellij 0.44.2. [Download the latest release →](https://github.com/LittleBear1025-xzh/zellij-autolock/releases)
+
+*zellij-autolock* is a Zellij plugin that automatically switches between Zellij's "Normal" and "Locked" modes by inspecting the command running within the focused Zellij pane.
 
 I built *zellij-autolock* in pursuit of seamless navigation between Zellij panes and Vim windows. It works well for Vim, Neovim, and with other CLI applications that use keymaps that conflict with Zellij's keymaps including Helix, FZF, and more.
 
@@ -21,9 +23,9 @@ Notice how the Zellij mode ( "Normal" or "Locked" in the top-right corner ) auto
 
 ## Install
 
-Download the wasm file from the [releases page](https://github.com/fresh2dev/zellij-autolock/releases). Save it to your Zellij config path (e.g., `~/.config/zellij/plugins/zellij-autolock.wasm`). You will reference this path when defining the plugin in your Zellij config.
+Download the wasm file from the [releases page](https://github.com/LittleBear1025-xzh/zellij-autolock/releases). Save it to your Zellij config path (e.g., `~/.config/zellij/plugins/zellij-autolock.wasm`). You will reference this path when defining the plugin in your Zellij config.
 
-> Note: Zellij >= 0.41 is also required.
+> Note: Zellij >= 0.44.2 is required for this fork.
 
 ## Config
 
