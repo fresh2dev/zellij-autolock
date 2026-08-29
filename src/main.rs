@@ -1,3 +1,6 @@
+mod command;
+
+use command::{is_trigger_command, running_command_executable};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 use zellij_tile::shim::list_clients;
@@ -120,15 +123,10 @@ impl ZellijPlugin for State {
                         let mut is_trigger_cmd = false;
 
                         if running_command != "N/A" {
-                            let running_command_exe =
-                                running_command.split_whitespace().collect::<Vec<_>>()[0]
-                                    .split('/')
-                                    .last()
-                                    .unwrap_or("")
-                                    .to_string();
+                            let running_command_exe = running_command_executable(&running_command);
 
-                            is_trigger_cmd = self.lock_trigger_cmds.contains(&running_command)
-                                || self.lock_trigger_cmds.contains(&running_command_exe);
+                            is_trigger_cmd =
+                                is_trigger_command(&running_command, &self.lock_trigger_cmds);
 
                             if self.print_to_log {
                                 eprintln!(

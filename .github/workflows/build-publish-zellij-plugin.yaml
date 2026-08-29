@@ -27,13 +27,20 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          profile: minimal
-          override: true
+          components: rustfmt
           toolchain: '1.83.0'
           target: wasm32-wasip1
 
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run tests
+        run: |
+          rustc --test src/command.rs -o /tmp/zellij-autolock-command-tests
+          /tmp/zellij-autolock-command-tests
+
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - if: >
           github.ref_type == 'tag'
