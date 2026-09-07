@@ -1,0 +1,63 @@
+name: 'Release'
+
+on:
+  push:
+    tags: ['v?[0-9]+.*']
+  workflow_dispatch:
+
+permissions:
+  contents: 'write'
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-release:
+    name: 'build-release'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: 'Checkout repository'
+        uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1
+
+      - name: 'Install Rust'
+        uses: 'dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0' # master
+        with:
+          toolchain: 'stable'
+          target: 'wasm32-wasip1'
+
+      - name: 'Build release binary'
+        run: 'cargo build --release --locked'
+
+      - name: 'Upload plugin artifact'
+        uses: 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' # v7.0.1
+        with:
+          name: 'zellij-autolock-${{ github.ref_name }}'
+          path: './target/wasm32-wasip1/release/zellij-autolock.wasm'
+          if-no-files-found: 'error'
+
+      # CHANGELOG.md is maintained by hand (drafted locally with git-cliff) and committed
+      # before tagging; the release notes are that version's section.
+      - if: "github.ref_type == 'tag'"
+        name: 'Extract release notes from CHANGELOG.md'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## /{p = ($2 == v)} p' CHANGELOG.md > CHANGES.md
+          if ! test -s CHANGES.md; then
+            echo "No '## $version' section in CHANGELOG.md" >&2; exit 1
+          fi
+          if grep -qi unreleased CHANGES.md; then
+            echo "CHANGELOG.md still marks $version as unreleased" >&2; exit 1
+          fi
+          cat CHANGES.md
+
+      - if: "github.ref_type == 'tag'"
+        name: 'Create draft release'
+        uses: 'softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64' # v3.0.3
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+        with:
+          draft: true
+          prerelease: false
+          body_path: 'CHANGES.md'
+          files: |-
+            ./target/wasm32-wasip1/release/zellij-autolock.wasm
