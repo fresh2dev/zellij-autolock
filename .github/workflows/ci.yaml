@@ -1,0 +1,67 @@
+name: 'CI'
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: 'read'
+
+env:
+  RUST_BACKTRACE: 1
+  # Fail on all warnings, including Clippy lints.
+  RUSTFLAGS: '-Dwarnings'
+
+jobs:
+  fmt:
+    name: 'rustfmt'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1
+
+      - name: 'Install Rust'
+        uses: 'dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0' # master
+        with:
+          toolchain: 'stable'
+          components: 'rustfmt'
+
+      - run: 'cargo fmt --all --check'
+
+  clippy:
+    name: 'clippy'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1
+
+      - name: 'Install Rust'
+        uses: 'dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0' # master
+        with:
+          toolchain: 'stable'
+          target: 'wasm32-wasip1'
+          components: 'clippy'
+
+      - run: 'cargo clippy --release --all-targets'
+
+  build:
+    name: 'build'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1
+
+      - name: 'Install Rust'
+        uses: 'dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0' # master
+        with:
+          toolchain: 'stable'
+          target: 'wasm32-wasip1'
+
+      - name: 'Build release binary'
+        run: 'cargo build --release --locked'
+
+      - name: 'Upload plugin artifact'
+        uses: 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' # v7.0.1
+        with:
+          name: 'zellij-autolock-${{ github.sha }}'
+          path: './target/wasm32-wasip1/release/zellij-autolock.wasm'
+          if-no-files-found: 'error'

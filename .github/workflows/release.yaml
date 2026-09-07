@@ -1,0 +1,64 @@
+name: 'Release'
+
+on:
+  push:
+    tags: ['v?[0-9]+.*']
+  workflow_dispatch:
+
+permissions:
+  contents: 'write'
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-release:
+    name: 'build-release'
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: 'Checkout repository'
+        uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: false # https://github.com/actions/checkout/issues/1467
+
+      - name: 'Fetch tags (git-cliff needs full tag history)'
+        run: 'git fetch --tags --force'
+
+      - name: 'Install Rust'
+        uses: 'dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0' # master
+        with:
+          toolchain: 'stable'
+          target: 'wasm32-wasip1'
+
+      - name: 'Build release binary'
+        run: 'cargo build --release --locked'
+
+      - name: 'Upload plugin artifact'
+        uses: 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' # v7.0.1
+        with:
+          name: 'zellij-autolock-${{ github.ref_name }}'
+          path: './target/wasm32-wasip1/release/zellij-autolock.wasm'
+          if-no-files-found: 'error'
+
+      - if: "github.ref_type == 'tag'"
+        name: 'Generate release notes'
+        id: 'git-cliff'
+        uses: 'orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2' # v4.9.0
+        with:
+          config: 'cliff.toml'
+          args: '-vv --latest --strip header'
+        env:
+          OUTPUT: 'CHANGES.md'
+
+      - if: "github.ref_type == 'tag'"
+        name: 'Create draft release'
+        uses: 'softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64' # v3.0.3
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+        with:
+          draft: true
+          prerelease: false
+          body: '${{ steps.git-cliff.outputs.content }}'
+          files: |-
+            ./target/wasm32-wasip1/release/zellij-autolock.wasm
