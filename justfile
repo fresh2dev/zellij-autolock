@@ -3,6 +3,9 @@ default:
 
 [positional-arguments]
 build *args:
+    rustup toolchain install
+    rustup target add wasm32-wasip1
+    cargo fetch
     cargo build $@
 
 clear-cache:
