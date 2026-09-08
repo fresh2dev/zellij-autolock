@@ -38,6 +38,11 @@ impl Host for ZellijHost {
 }
 
 struct TabPane {
+    /// Stable identity of the focused tab, used to detect tab changes. Tab
+    /// positions shift when tabs are closed or moved, so a position alone
+    /// cannot tell "the same tab" from "a different tab now at this position".
+    tab_id: usize,
+    /// Position of the focused tab, needed to look it up in a `PaneManifest`.
     tab_pos: usize,
     pane_id: u32,
     command: String,
@@ -68,6 +73,7 @@ impl Default for State {
             timer_scheduled: false,
             current_mode: InputMode::Normal,
             latest_tab_pane: TabPane {
+                tab_id: usize::MAX,
                 tab_pos: usize::MAX,
                 pane_id: u32::MAX,
                 command: "".to_string(),
@@ -176,9 +182,10 @@ impl State {
 
             Event::TabUpdate(tab_info) => {
                 if let Some(tab) = get_focused_tab(&tab_info)
-                    && tab.position != self.latest_tab_pane.tab_pos
+                    && tab.tab_id != self.latest_tab_pane.tab_id
                 {
                     self.latest_tab_pane = TabPane {
+                        tab_id: tab.tab_id,
                         tab_pos: tab.position,
                         pane_id: u32::MAX,
                         command: "".to_string(),
