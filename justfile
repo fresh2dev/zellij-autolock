@@ -11,6 +11,12 @@ bootstrap:
 build *args:
     cargo build $@
 
+# Tests run natively on the host target: the default build target is wasm
+# (see .cargo/config.toml), which has no test runner installed.
+[positional-arguments]
+test *args:
+    cargo test --target "$(rustc -vV | sed -n 's/^host: //p')" "$@"
+
 clear-cache:
     rm -rf ~/.cache/zellij ~/Library/Caches/org.Zellij-Contributors.Zellij
 
