@@ -37,15 +37,21 @@ impl Host for ZellijHost {
     }
 }
 
+/// What the plugin last saw of the focused tab and pane. Every field is
+/// unknown (`None` / empty) until the corresponding update arrives.
+#[derive(Default)]
 struct TabPane {
     /// Stable identity of the focused tab, used to detect tab changes. Tab
     /// positions shift when tabs are closed or moved, so a position alone
     /// cannot tell "the same tab" from "a different tab now at this position".
-    tab_id: usize,
+    tab_id: Option<usize>,
     /// Position of the focused tab, needed to look it up in a `PaneManifest`.
-    tab_pos: usize,
-    pane_id: u32,
-    command: String,
+    tab_pos: Option<usize>,
+    pane_id: Option<u32>,
+    /// The focused pane's last seen command; `Some("")` means no command is
+    /// running. Kept apart from `None` so that landing on an idle pane after a
+    /// tab change still counts as a change and gets assessed.
+    command: Option<String>,
 }
 
 struct State {
@@ -72,12 +78,7 @@ impl Default for State {
             reaction_seconds: 0.3,
             timer_scheduled: false,
             current_mode: InputMode::Normal,
-            latest_tab_pane: TabPane {
-                tab_id: usize::MAX,
-                tab_pos: usize::MAX,
-                pane_id: u32::MAX,
-                command: "".to_string(),
-            },
+            latest_tab_pane: TabPane::default(),
             print_to_log: false,
         }
     }
@@ -232,13 +233,12 @@ impl State {
 
             Event::TabUpdate(tab_info) => {
                 if let Some(tab) = get_focused_tab(&tab_info)
-                    && tab.tab_id != self.latest_tab_pane.tab_id
+                    && Some(tab.tab_id) != self.latest_tab_pane.tab_id
                 {
                     self.latest_tab_pane = TabPane {
-                        tab_id: tab.tab_id,
-                        tab_pos: tab.position,
-                        pane_id: u32::MAX,
-                        command: "".to_string(),
+                        tab_id: Some(tab.tab_id),
+                        tab_pos: Some(tab.position),
+                        ..Default::default()
                     };
                     // Zellij sends `PaneUpdate` *before* `TabUpdate` on a tab switch, so the
                     // pane handler above has already seen (and ignored) the new tab's pane
@@ -249,13 +249,13 @@ impl State {
             }
 
             Event::PaneUpdate(pane_manifest) => {
-                let focused_pane =
-                    get_focused_pane(self.latest_tab_pane.tab_pos, &pane_manifest).clone();
-
-                if let Some(pane) = focused_pane
-                    && pane.id != self.latest_tab_pane.pane_id
+                // Until a `TabUpdate` has told us which tab is focused there is
+                // nothing to look the pane up in.
+                if let Some(tab_pos) = self.latest_tab_pane.tab_pos
+                    && let Some(pane) = get_focused_pane(tab_pos, &pane_manifest)
+                    && Some(pane.id) != self.latest_tab_pane.pane_id
                 {
-                    self.latest_tab_pane.pane_id = pane.id;
+                    self.latest_tab_pane.pane_id = Some(pane.id);
                     host.list_clients();
                 }
             }
