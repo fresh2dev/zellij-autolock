@@ -306,27 +306,19 @@ impl State {
     }
 
     fn handle_pipe(&mut self, pipe_message: PipeMessage, host: &mut impl Host) -> bool {
-        if let Some(payload) = pipe_message.payload {
-            let action = payload.to_string();
-            match action.as_str() {
-                "enable" => {
-                    self.is_enabled = true;
-                    self.log(format_args!("Enabled"));
-                }
-                "disable" => {
-                    self.is_enabled = false;
-                    self.log(format_args!("Disabled"));
-                }
-                "toggle" => {
-                    self.is_enabled = !self.is_enabled;
-                    self.log(format_args!("Enabled: {}", self.is_enabled));
-                }
+        if let Some(action) = pipe_message.payload.as_deref() {
+            self.is_enabled = match action {
+                "enable" => true,
+                "disable" => false,
+                "toggle" => !self.is_enabled,
                 other => {
                     self.log(format_args!(
                         "Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
                     ));
+                    self.is_enabled
                 }
-            }
+            };
+            self.log(format_args!("Enabled: {}", self.is_enabled));
         }
 
         if self.is_enabled {
