@@ -51,9 +51,9 @@ struct TabPane {
 struct State {
     permissions_granted: bool,
     is_enabled: bool,
-    lock_regex: String,
-    lock_triggers_deprecated: String,
-    ignore_regex: String,
+    lock_regex: Option<Regex>,
+    lock_triggers_deprecated: Option<Regex>,
+    ignore_regex: Option<Regex>,
     reaction_seconds: f64,
     timer_scheduled: bool,
     current_mode: InputMode,
@@ -66,9 +66,9 @@ impl Default for State {
         Self {
             permissions_granted: false,
             is_enabled: true,
-            lock_regex: "^(vim|nvim)".to_string(),
-            lock_triggers_deprecated: "".to_string(),
-            ignore_regex: "^(zellij|atuin history start.*)$".to_string(),
+            lock_regex: Regex::new("^(vim|nvim)").ok(),
+            lock_triggers_deprecated: None,
+            ignore_regex: Regex::new("^(zellij|atuin history start.*)$").ok(),
             reaction_seconds: 0.3,
             timer_scheduled: false,
             current_mode: InputMode::Normal,
@@ -105,9 +105,10 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::Timer,
         ]);
-        if self.permissions_granted {
-            ZellijHost.hide_self();
-        }
+        // Zellij calls `load` exactly once per plugin instance, right after
+        // instantiation on a fresh `State` (zellij-server plugin_loader.rs,
+        // `load_plugin_instance`). A permission grant does not re-run it; the
+        // `PermissionRequestResult` event is what hides the pane.
         self.load_configuration(configuration);
     }
 
@@ -126,39 +127,88 @@ fn parse_bool_config(value: &str) -> bool {
     matches!(value.trim(), "true" | "t" | "y" | "1")
 }
 
+/// The command a client's focused pane is running, or `""` if there is none.
+///
+/// Zellij reports `"N/A"` for a pane with no running command (an idle shell
+/// prompt, a plugin pane, ...). This is the only place that maps it to empty.
+fn running_command(client: &ClientInfo) -> &str {
+    match client.running_command.trim() {
+        "N/A" => "",
+        cmd => cmd,
+    }
+}
+
+/// True if `re` is set and matches any non-empty text in `texts`.
+///
+/// An unset rule never matches, and neither does empty text, so a catch-all
+/// pattern like `.*` still leaves an idle pane (no running command) unlocked.
+fn is_match(re: Option<&Regex>, texts: [&str; 2]) -> bool {
+    re.is_some_and(|re| {
+        texts
+            .iter()
+            .any(|text| !text.is_empty() && re.is_match(text))
+    })
+}
+
 impl State {
     fn load_configuration(&mut self, configuration: BTreeMap<String, String>) {
+        // Parsed first so that regex compile errors below can be logged.
+        if let Some(print_to_log) = configuration.get("print_to_log") {
+            self.print_to_log = parse_bool_config(print_to_log);
+        }
+
         if let Some(is_enabled) = configuration.get("is_enabled") {
             self.is_enabled = parse_bool_config(is_enabled);
         }
 
         if let Some(lock_regex) = configuration.get("lock_regex") {
-            self.lock_regex = lock_regex.to_string();
+            self.lock_regex = self.compile_regex("lock_regex", lock_regex);
         }
 
         // TODO: delete deprecated `triggers` after v0.3.0 release
-        if let Some(lock_triggers_deprecated) = configuration.get("triggers") {
-            self.lock_triggers_deprecated = format!("^({})$", lock_triggers_deprecated);
+        if let Some(triggers) = configuration.get("triggers") {
+            self.lock_triggers_deprecated =
+                self.compile_regex("triggers", &format!("^({triggers})$"));
         }
 
         if let Some(ignore_regex) = configuration.get("ignore_regex") {
-            self.ignore_regex = ignore_regex.to_string();
+            self.ignore_regex = self.compile_regex("ignore_regex", ignore_regex);
         }
 
         if let Some(reaction_seconds) = configuration.get("reaction_seconds") {
             self.reaction_seconds = reaction_seconds.parse::<f64>().unwrap();
         }
 
-        if let Some(print_to_log) = configuration.get("print_to_log") {
-            self.print_to_log = parse_bool_config(print_to_log);
-        }
-
         if self.print_to_log {
             eprintln!("[autolock] Configuration loaded.");
             eprintln!("[autolock] Enabled: {}", self.is_enabled);
-            eprintln!("[autolock] Lock Commands: {:?}", self.lock_regex);
-            eprintln!("[autolock] Ignore Commands: {:?}", self.ignore_regex);
+            eprintln!(
+                "[autolock] Lock Commands: {:?}",
+                self.lock_regex.as_ref().map(Regex::as_str)
+            );
+            eprintln!(
+                "[autolock] Ignore Commands: {:?}",
+                self.ignore_regex.as_ref().map(Regex::as_str)
+            );
             eprintln!("[autolock] Reaction seconds: {}", self.reaction_seconds);
+        }
+    }
+
+    /// Compile a configured pattern once. An empty pattern disables the rule.
+    /// An invalid pattern also disables it (fails closed) and is logged once,
+    /// here, rather than on every check.
+    fn compile_regex(&self, name: &str, pattern: &str) -> Option<Regex> {
+        if pattern.is_empty() {
+            return None;
+        }
+        match Regex::new(pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                if self.print_to_log {
+                    eprintln!("[autolock] Invalid `{name}` pattern {pattern:?}: {e}");
+                }
+                None
+            }
         }
     }
 
@@ -217,10 +267,7 @@ impl State {
 
                 if let Some(current_client) = clients.iter().find(|client| client.is_current_client)
                 {
-                    let running_command = match current_client.running_command.trim() {
-                        "N/A" => "",
-                        cmd => cmd,
-                    };
+                    let running_command = running_command(current_client);
 
                     let command_changed =
                         self.latest_tab_pane.command.as_deref() != Some(running_command);
@@ -277,7 +324,13 @@ impl State {
                         eprintln!("[autolock] Enabled: {}", self.is_enabled);
                     }
                 }
-                _ => {}
+                other => {
+                    if self.print_to_log {
+                        eprintln!(
+                            "[autolock] Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
+                        );
+                    }
+                }
             }
         }
 
@@ -297,28 +350,19 @@ impl State {
     }
 
     fn determine_target_mode(&self, running_command: &str) -> InputMode {
-        let running_command_exe = match running_command
+        let running_command_exe = running_command
             .split_whitespace()
             .next()
             .and_then(|cmd| cmd.split('/').next_back())
             .unwrap_or("")
-            .trim_matches(['(', ')'])
-        {
-            "N/A" => "",
-            cmd_exe => cmd_exe,
-        };
+            .trim_matches(['(', ')']);
 
-        let lock = self.is_regex_match(&self.lock_regex, running_command_exe, running_command);
+        let texts = [running_command, running_command_exe];
+        let lock = is_match(self.lock_regex.as_ref(), texts)
+            || is_match(self.lock_triggers_deprecated.as_ref(), texts);
+        let ignore = is_match(self.ignore_regex.as_ref(), texts);
 
-        let lock_deprecated = self.is_regex_match(
-            &self.lock_triggers_deprecated,
-            running_command,
-            running_command_exe,
-        );
-
-        let ignore = self.is_regex_match(&self.ignore_regex, running_command, running_command_exe);
-
-        let engage = (lock || lock_deprecated) && !ignore;
+        let engage = lock && !ignore;
 
         if self.print_to_log {
             eprintln!(
@@ -332,26 +376,5 @@ impl State {
         } else {
             InputMode::Normal
         }
-    }
-
-    fn _is_regex_match(&self, pattern: &str, text: &str) -> bool {
-        if pattern.is_empty() || text.is_empty() {
-            return false;
-        }
-        match Regex::new(pattern) {
-            Ok(re) => re.is_match(text),
-            Err(e) => {
-                if self.print_to_log {
-                    eprintln!(
-                        "[autolock] Invalid regex pattern: '{}'. Error: {}",
-                        pattern, e
-                    );
-                }
-                false
-            }
-        }
-    }
-    fn is_regex_match(&self, pattern: &str, command: &str, command_exe: &str) -> bool {
-        self._is_regex_match(pattern, command) || self._is_regex_match(pattern, command_exe)
     }
 }
