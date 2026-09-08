@@ -180,18 +180,23 @@ impl State {
             self.reaction_seconds = reaction_seconds.parse::<f64>().unwrap();
         }
 
+        self.log(format_args!("Configuration loaded."));
+        self.log(format_args!("Enabled: {}", self.is_enabled));
+        self.log(format_args!(
+            "Lock Commands: {:?}",
+            self.lock_regex.as_ref().map(Regex::as_str)
+        ));
+        self.log(format_args!(
+            "Ignore Commands: {:?}",
+            self.ignore_regex.as_ref().map(Regex::as_str)
+        ));
+        self.log(format_args!("Reaction seconds: {}", self.reaction_seconds));
+    }
+
+    /// Write one line to the Zellij log, if `print_to_log` is set.
+    fn log(&self, args: std::fmt::Arguments) {
         if self.print_to_log {
-            eprintln!("[autolock] Configuration loaded.");
-            eprintln!("[autolock] Enabled: {}", self.is_enabled);
-            eprintln!(
-                "[autolock] Lock Commands: {:?}",
-                self.lock_regex.as_ref().map(Regex::as_str)
-            );
-            eprintln!(
-                "[autolock] Ignore Commands: {:?}",
-                self.ignore_regex.as_ref().map(Regex::as_str)
-            );
-            eprintln!("[autolock] Reaction seconds: {}", self.reaction_seconds);
+            eprintln!("[autolock] {args}");
         }
     }
 
@@ -205,9 +210,7 @@ impl State {
         match Regex::new(pattern) {
             Ok(re) => Some(re),
             Err(e) => {
-                if self.print_to_log {
-                    eprintln!("[autolock] Invalid `{name}` pattern {pattern:?}: {e}");
-                }
+                self.log(format_args!("Invalid `{name}` pattern {pattern:?}: {e}"));
                 None
             }
         }
@@ -308,28 +311,20 @@ impl State {
             match action.as_str() {
                 "enable" => {
                     self.is_enabled = true;
-                    if self.print_to_log {
-                        eprintln!("[autolock] Enabled");
-                    }
+                    self.log(format_args!("Enabled"));
                 }
                 "disable" => {
                     self.is_enabled = false;
-                    if self.print_to_log {
-                        eprintln!("[autolock] Disabled");
-                    }
+                    self.log(format_args!("Disabled"));
                 }
                 "toggle" => {
                     self.is_enabled = !self.is_enabled;
-                    if self.print_to_log {
-                        eprintln!("[autolock] Enabled: {}", self.is_enabled);
-                    }
+                    self.log(format_args!("Enabled: {}", self.is_enabled));
                 }
                 other => {
-                    if self.print_to_log {
-                        eprintln!(
-                            "[autolock] Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
-                        );
-                    }
+                    self.log(format_args!(
+                        "Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
+                    ));
                 }
             }
         }
@@ -364,12 +359,9 @@ impl State {
 
         let engage = lock && !ignore;
 
-        if self.print_to_log {
-            eprintln!(
-                "[autolock] Detected command: `{}`; Executable: `{}`; Is trigger? {}.",
-                running_command, running_command_exe, engage,
-            );
-        }
+        self.log(format_args!(
+            "Detected command: `{running_command}`; Executable: `{running_command_exe}`; Is trigger? {engage}."
+        ));
 
         if engage {
             InputMode::Locked
