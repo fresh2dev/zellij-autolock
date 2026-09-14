@@ -6,8 +6,8 @@
 //! are recorded too, and answered from a small world each test scripts up
 //! front (`focus`, `running`, `failing`, `plugin`).
 //!
-//! Tests are grouped into `decision`, `config`, `events`, and `pipes`, so one
-//! group can be run alone with e.g. `just test events::`.
+//! Tests are grouped into `decision`, `config`, `events`, `command_changed`,
+//! and `pipes`, so one group can be run alone with e.g. `just test events::`.
 
 use super::*;
 use std::collections::HashMap;
@@ -196,6 +196,13 @@ fn tab_update() -> Event {
 /// reading the payload, so it is left empty.
 fn pane_update() -> Event {
     Event::PaneUpdate(PaneManifest::default())
+}
+
+/// A `CommandChanged` event for `pane`. Every event claims that client 1 has
+/// the pane focused, so tests show the plugin does not rely on that list.
+fn command_changed(pane: PaneId, argv: &[&str], is_foreground: bool) -> Event {
+    let argv = argv.iter().map(ToString::to_string).collect();
+    Event::CommandChanged(pane, argv, is_foreground, vec![1])
 }
 
 fn pipe(payload: Option<&str>) -> PipeMessage {
@@ -854,6 +861,217 @@ mod events {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+    }
+}
+
+/// `Event::CommandChanged`: Zellij pushing the focused pane's new command.
+///
+/// The scripted world is kept in step with the events, because the follow-up
+/// check an event arms queries it.
+mod command_changed {
+    use super::*;
+
+    /// A started plugin whose client has pane 1 focused, idle at a `zsh` prompt.
+    fn at_prompt(host: &mut MockHost) -> State {
+        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        started(&[], host)
+    }
+
+    #[test]
+    fn locks_when_editor_starts_and_unlocks_when_it_exits() {
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+
+        // The editor takes the foreground: lock, with no query needed.
+        host.running(PANE_1, &["nvim", "main.rs"]);
+        state.handle_event(
+            command_changed(PANE_1, &["nvim", "main.rs"], true),
+            &mut host,
+        );
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+
+        // Zellij confirms the switch; the follow-up check finds the same command.
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
+        );
+
+        // The shell is back in the foreground. Zellij reports the shell's own
+        // argv, not "no command".
+        host.running(PANE_1, &["zsh"]);
+        state.handle_event(command_changed(PANE_1, &["zsh"], false), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::SwitchToInputMode(InputMode::Normal),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+    }
+
+    #[test]
+    fn not_foreground_does_not_mean_idle() {
+        // In a command pane (`zellij run -- nvim`, or a layout `command`) the
+        // program is the pane's own process, so Zellij reports it with
+        // `is_foreground == false`. It still locks.
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+
+        host.running(PANE_1, &["nvim", "main.rs"]);
+        state.handle_event(
+            command_changed(PANE_1, &["nvim", "main.rs"], false),
+            &mut host,
+        );
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+    }
+
+    #[test]
+    fn events_for_unfocused_panes_are_ignored_and_keep_the_focus_cache() {
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+
+        // An editor starts in another pane, which the event even claims this
+        // client has focused. The plugin's own focus query says otherwise.
+        state.handle_event(command_changed(PANE_2, &["nvim"], true), &mut host);
+        assert_eq!(host.drain(), vec![]);
+        assert_eq!(state.focus.pane, Some(PANE_1));
+
+        // The focused pane's own events still count.
+        host.running(PANE_1, &["vim"]);
+        state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignored_while_disabled_or_without_permission() {
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+        state.handle_pipe(pipe(Some("disable")), &mut host);
+
+        host.running(PANE_1, &["vim"]);
+        state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
+        assert_eq!(host.drain(), vec![]);
+        // Not even cached, so enabling later still assesses it.
+        assert_eq!(state.focus.command, Some(vec!["zsh".to_string()]));
+
+        // Same once the permission is revoked, although the focused pane is known.
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+        state.handle_event(
+            Event::PermissionRequestResult(PermissionStatus::Denied),
+            &mut host,
+        );
+        state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
+        assert_eq!(host.drain(), vec![]);
+    }
+
+    #[test]
+    fn event_for_a_change_a_query_already_saw_is_a_noop() {
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+
+        // The check after `nvim⏎` sees the editor and locks...
+        host.running(PANE_1, &["nvim", "main.rs"]);
+        state.handle_event(Event::InputReceived, &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        host.drain();
+
+        // ...so Zellij's event for the same change, up to a second later, does nothing.
+        state.handle_event(
+            command_changed(PANE_1, &["nvim", "main.rs"], true),
+            &mut host,
+        );
+        assert_eq!(host.drain(), vec![]);
+    }
+
+    #[test]
+    fn repeated_command_does_not_undo_a_manual_mode_change() {
+        let mut host = MockHost::default();
+        let mut state = at_prompt(&mut host);
+
+        // vim locks through the event; the user unlocks by hand.
+        host.running(PANE_1, &["vim"]);
+        state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        host.drain();
+
+        // The same command again changes nothing.
+        state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
+        assert_eq!(host.drain(), vec![]);
+    }
+
+    #[test]
+    fn late_event_for_a_pane_just_left_is_ignored() {
+        // Events and focus updates come from different Zellij threads, so an
+        // event can arrive after the focus has already moved on.
+        let mut host = MockHost::default();
+        host.running(PANE_2, &["zsh"]);
+        let mut state = at_prompt(&mut host);
+        host.running(PANE_1, &["nvim"]);
+        state.handle_event(command_changed(PANE_1, &["nvim"], true), &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+
+        // Focus moves to the idle pane 2: unlock.
+        host.focus(PANE_2);
+        state.handle_event(pane_update(), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        host.drain();
+
+        // The editor in pane 1 exits, and that event only arrives now.
+        host.running(PANE_1, &["zsh"]);
+        state.handle_event(command_changed(PANE_1, &["zsh"], false), &mut host);
+        assert_eq!(host.drain(), vec![]);
+        assert_eq!(state.focus.pane, Some(PANE_2));
+    }
+
+    #[test]
+    fn early_event_for_a_pane_about_to_be_focused_is_left_to_the_focus_update() {
+        let mut host = MockHost::default();
+        host.running(PANE_2, &["nvim"]);
+        let mut state = at_prompt(&mut host);
+
+        // Pane 2's event arrives before the plugin learns focus moved there.
+        state.handle_event(command_changed(PANE_2, &["nvim"], true), &mut host);
+        assert_eq!(host.drain(), vec![]);
+
+        // The focus update queries pane 2 itself and locks.
+        host.focus(PANE_2);
+        state.handle_event(tab_update(), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_2),
                 HostCall::SwitchToInputMode(InputMode::Locked),
                 HostCall::SetTimeout(0.3),
             ]
