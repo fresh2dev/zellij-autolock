@@ -118,6 +118,7 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
         ]);
         subscribe(&[
+            EventType::CommandChanged,
             EventType::InputReceived,
             EventType::ModeUpdate,
             EventType::PaneUpdate,
@@ -255,6 +256,26 @@ impl State {
                 // Cleared first, so a changed command can arm a follow-up.
                 self.timer_scheduled = false;
                 self.recheck(host);
+            }
+
+            // Zellij broadcasts this to every client's plugin instance, for any
+            // terminal pane whose foreground command changed since its last
+            // round (about once a second, and only for panes that printed
+            // something). Only the pane this client has focused matters. The
+            // event never moves the focus cache: a late event for a pane the
+            // client just left must not pull focus back to it. An event that
+            // is older than the last query is corrected by the follow-up check
+            // that `assess` arms on any change.
+            Event::CommandChanged(pane, argv, is_foreground, _focused_client_ids)
+                if self.is_active() && self.focus.pane == Some(pane) =>
+            {
+                // `is_foreground` is false both for a shell back at its prompt
+                // and for a command pane running its program, so it cannot mean
+                // "idle". It is only logged.
+                self.log(format_args!(
+                    "Command changed in {pane:?} (foreground: {is_foreground})"
+                ));
+                self.assess(argv, host);
             }
 
             _ => {}
