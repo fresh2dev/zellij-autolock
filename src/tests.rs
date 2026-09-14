@@ -205,6 +205,16 @@ fn command_changed(pane: PaneId, argv: &[&str], is_foreground: bool) -> Event {
     Event::CommandChanged(pane, argv, is_foreground, vec![1])
 }
 
+/// A `PluginConfigurationChanged` event carrying the whole new `config` block.
+fn config_changed(config: &[(&str, &str)]) -> Event {
+    Event::PluginConfigurationChanged(
+        config
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    )
+}
+
 fn pipe(payload: Option<&str>) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Keybind,
@@ -251,6 +261,25 @@ mod decision {
         let state = state_with(&[("lock_regex", "^nvim$")]);
         let argv = ["/opt/My Tools/nvim", "notes.md"].map(str::to_string);
         assert_eq!(state.determine_target_mode(&argv), InputMode::Locked);
+    }
+
+    #[test]
+    fn executable_is_extracted_from_windows_path_with_spaces() {
+        // Issue #19: `C:\Program Files\...` used to yield `C:\Program`.
+        let argv = [r"C:\Program Files\Neovim\bin\nvim.exe", "notes.md"].map(str::to_string);
+
+        // The executable is `nvim.exe`. The default `^(vim|nvim)` has no end
+        // anchor, so it locks.
+        assert_eq!(
+            State::default().determine_target_mode(&argv),
+            InputMode::Locked
+        );
+
+        // An anchored pattern has to allow for the extension.
+        let state = state_with(&[("lock_regex", r"^nvim(\.exe)?$")]);
+        assert_eq!(state.determine_target_mode(&argv), InputMode::Locked);
+        let state = state_with(&[("lock_regex", "^nvim$")]);
+        assert_eq!(state.determine_target_mode(&argv), InputMode::Normal);
     }
 
     #[test]
@@ -389,7 +418,8 @@ mod decision {
     }
 }
 
-/// `load_configuration`: defaults, overrides, and value parsing.
+/// `load_configuration` and runtime configuration changes: defaults,
+/// overrides, and value parsing.
 mod config {
     use super::*;
 
@@ -436,6 +466,124 @@ mod config {
         for falsy in ["false", "f", "n", "0", "", "yes", "TRUE", "on"] {
             assert!(!parse_bool_config(falsy), "{falsy:?}");
         }
+    }
+
+    #[test]
+    fn reaction_seconds_must_be_a_finite_non_negative_number() {
+        // Zellij panics turning a negative, NaN, or infinite value into a
+        // `Duration`, which would silently kill the timer. Those, and anything
+        // that is not a number, keep the current value instead of panicking.
+        for invalid in ["abc", "", "0.3s", "-1", "NaN", "inf", "1e999"] {
+            let state = state_with(&[("reaction_seconds", invalid)]);
+            assert_eq!(state.reaction_seconds, 0.3, "{invalid:?}");
+        }
+        for (valid, seconds) in [("0", 0.0), (" 0.05 ", 0.05), ("2", 2.0)] {
+            let state = state_with(&[("reaction_seconds", valid)]);
+            assert_eq!(state.reaction_seconds, seconds, "{valid:?}");
+        }
+    }
+
+    #[test]
+    fn configuration_change_reloads_patterns_and_reassesses() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["htop"]);
+        let mut state = started(&[("lock_regex", "^vim$")], &mut host);
+
+        // htop did not lock. Under the new rules it does, so the unchanged
+        // command is assessed again.
+        state.handle_event(config_changed(&[("lock_regex", "^(vim|htop)$")]), &mut host);
+        assert_eq!(pattern(&state.lock_regex), Some("^(vim|htop)$"));
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_1),
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
+    }
+
+    #[test]
+    fn unchanged_configuration_block_is_ignored() {
+        // Zellij compares a reloaded block with the one the plugin was loaded
+        // with, so once it has changed, every later reload sends it again.
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["htop"]);
+        let mut state = started(&[("lock_regex", "^vim$")], &mut host);
+
+        // The block the plugin was loaded with.
+        state.handle_event(config_changed(&[("lock_regex", "^vim$")]), &mut host);
+        assert_eq!(host.drain(), vec![]);
+
+        // A real change locks; the user then unlocks by hand.
+        let changed = [("lock_regex", "^(vim|htop)$")];
+        state.handle_event(config_changed(&changed), &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
+        state.handle_event(Event::Timer(0.3), &mut host);
+        host.drain();
+
+        // The same block again, e.g. after saving an unrelated setting, must
+        // not assess again and undo the manual unlock.
+        state.handle_event(config_changed(&changed), &mut host);
+        assert_eq!(host.drain(), vec![]);
+    }
+
+    #[test]
+    fn keys_removed_by_a_change_revert_to_their_defaults() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        let mut state = started(
+            &[
+                ("lock_regex", "^htop$"),
+                ("ignore_regex", ""),
+                ("triggers", "less"),
+                ("reaction_seconds", "1.5"),
+            ],
+            &mut host,
+        );
+
+        state.handle_event(config_changed(&[]), &mut host);
+
+        let defaults = State::default();
+        assert_eq!(pattern(&state.lock_regex), pattern(&defaults.lock_regex));
+        assert_eq!(
+            pattern(&state.ignore_regex),
+            pattern(&defaults.ignore_regex)
+        );
+        assert_eq!(pattern(&state.lock_triggers_deprecated), None);
+        assert_eq!(state.reaction_seconds, defaults.reaction_seconds);
+    }
+
+    #[test]
+    fn change_keeps_a_pipe_choice_unless_it_edits_is_enabled() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        let mut state = started(&[], &mut host);
+        state.handle_pipe(pipe(Some("disable")), &mut host);
+        host.running(PANE_1, &["vim"]);
+
+        // A change to another setting keeps the plugin disabled.
+        state.handle_event(config_changed(&[("lock_regex", "^(vim|htop)$")]), &mut host);
+        assert!(!state.is_enabled);
+        assert_eq!(host.drain(), vec![]);
+
+        // A change that edits `is_enabled` itself wins, and starts from scratch.
+        state.handle_event(
+            config_changed(&[("lock_regex", "^(vim|htop)$"), ("is_enabled", "true")]),
+            &mut host,
+        );
+        assert!(state.is_enabled);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_1),
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(0.3),
+            ]
+        );
     }
 }
 
