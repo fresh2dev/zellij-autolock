@@ -85,6 +85,9 @@ struct State {
     current_mode: InputMode,
     focus: Focus,
     print_to_log: bool,
+    /// The configuration block last applied, to recognise the unchanged
+    /// blocks Zellij sends again on unrelated config reloads.
+    configuration: BTreeMap<String, String>,
 }
 
 impl Default for State {
@@ -100,6 +103,7 @@ impl Default for State {
             current_mode: InputMode::Normal,
             focus: Focus::default(),
             print_to_log: false,
+            configuration: BTreeMap::new(),
         }
     }
 }
@@ -119,10 +123,15 @@ impl ZellijPlugin for State {
         ]);
         subscribe(&[
             EventType::CommandChanged,
+            // Subscribed only so that Zellij sends `ModeUpdate` without the
+            // full keybinding table, which this plugin never reads. The
+            // `InitialKeybinds` event itself is ignored.
+            EventType::InitialKeybinds,
             EventType::InputReceived,
             EventType::ModeUpdate,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
+            EventType::PluginConfigurationChanged,
             EventType::TabUpdate,
             EventType::Timer,
         ]);
@@ -186,7 +195,18 @@ impl State {
         }
 
         if let Some(reaction_seconds) = configuration.get("reaction_seconds") {
-            self.reaction_seconds = reaction_seconds.parse::<f64>().unwrap();
+            // Zellij turns the value into a `Duration`, which panics on a
+            // negative, NaN, or infinite number. That panic would kill the
+            // timer silently, so such values are refused here.
+            match reaction_seconds.trim().parse::<f64>() {
+                Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => {
+                    self.reaction_seconds = seconds;
+                }
+                _ => self.log(format_args!(
+                    "Invalid `reaction_seconds` {reaction_seconds:?}; expected a number of seconds, keeping {}.",
+                    self.reaction_seconds
+                )),
+            }
         }
 
         self.log(format_args!("Configuration loaded."));
@@ -200,6 +220,62 @@ impl State {
             self.ignore_regex.as_ref().map(Regex::as_str)
         ));
         self.log(format_args!("Reaction seconds: {}", self.reaction_seconds));
+
+        self.configuration = configuration;
+    }
+
+    /// Apply a configuration block that changed while the plugin runs.
+    ///
+    /// Zellij sends the plugin's whole block, and decides whether it changed
+    /// by comparing it with the block the plugin was *loaded* with. Once it
+    /// has changed, every later config reload sends it again, so a block
+    /// identical to the one applied is ignored. Otherwise every setting is
+    /// rebuilt from its default, so a key removed from the block reverts.
+    fn apply_configuration_change(
+        &mut self,
+        configuration: BTreeMap<String, String>,
+        host: &mut impl Host,
+    ) {
+        if configuration == self.configuration {
+            return;
+        }
+        self.log(format_args!("Configuration changed."));
+
+        let was_enabled = self.is_enabled;
+        // `is_enabled` is the starting state, and the pipes may have flipped
+        // it since. Keep that unless this change edits the setting itself.
+        let is_enabled_changed =
+            configuration.get("is_enabled") != self.configuration.get("is_enabled");
+
+        let State {
+            is_enabled,
+            lock_regex,
+            lock_triggers_deprecated,
+            ignore_regex,
+            reaction_seconds,
+            print_to_log,
+            ..
+        } = State::default();
+        self.is_enabled = is_enabled;
+        self.lock_regex = lock_regex;
+        self.lock_triggers_deprecated = lock_triggers_deprecated;
+        self.ignore_regex = ignore_regex;
+        self.reaction_seconds = reaction_seconds;
+        self.print_to_log = print_to_log;
+
+        self.load_configuration(configuration);
+        if !is_enabled_changed {
+            self.is_enabled = was_enabled;
+        }
+
+        if self.is_enabled && !was_enabled {
+            // Nothing was tracked while disabled, as when a pipe enables it.
+            self.focus = Focus::default();
+        } else {
+            // The new rules may judge the same command differently.
+            self.focus.command = None;
+        }
+        self.recheck(host);
     }
 
     /// Write one line to the Zellij log, if `print_to_log` is set.
@@ -276,6 +352,10 @@ impl State {
                     "Command changed in {pane:?} (foreground: {is_foreground})"
                 ));
                 self.assess(argv, host);
+            }
+
+            Event::PluginConfigurationChanged(configuration) => {
+                self.apply_configuration_change(configuration, host);
             }
 
             _ => {}
@@ -426,14 +506,15 @@ impl State {
     /// Decide the mode for a pane running `argv`.
     ///
     /// Each rule is tested against the whole command line and against the
-    /// executable: the last path segment of the first argument, with any
-    /// surrounding parentheses removed (fish reports `(atuin)`). The first
-    /// argument is taken whole, so a path containing spaces stays intact.
+    /// executable: the last path segment of the first argument, after `/` or
+    /// Windows' `\`, with any surrounding parentheses removed (fish reports
+    /// `(atuin)`). The first argument is taken whole, so a path containing
+    /// spaces stays intact.
     fn determine_target_mode(&self, argv: &[String]) -> InputMode {
         let command_line = argv.join(" ");
         let executable = argv
             .first()
-            .and_then(|first| first.split('/').next_back())
+            .and_then(|first| first.split(['/', '\\']).next_back())
             .unwrap_or("")
             .trim_matches(['(', ')']);
 
