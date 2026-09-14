@@ -2,7 +2,9 @@
 //!
 //! These run on the host target (`just test`), not in wasm. Zellij is replaced
 //! by `MockHost`, which records every call the plugin makes so each test can
-//! assert exactly which host actions a sequence of events produced.
+//! assert exactly which host actions a sequence of events produced. Queries
+//! are recorded too, and answered from a small world each test scripts up
+//! front (`focus`, `running`, `failing`, `plugin`).
 //!
 //! Tests are grouped into `decision`, `config`, `events`, and `pipes`, so one
 //! group can be run alone with e.g. `just test events::`.
@@ -11,16 +13,33 @@ use super::*;
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
+#[expect(
+    dead_code,
+    reason = "query variants are first asserted in PLAN.md step 2"
+)]
 enum HostCall {
     ListClients,
+    FocusedPane,
+    PaneCommand(PaneId),
+    PluginUrl(PaneId),
     SetTimeout(f64),
     SwitchToInputMode(InputMode),
     HideSelf,
 }
 
+/// A recording stand-in for Zellij that answers queries from a scripted world.
+///
+/// Anything not scripted answers the way Zellij does for a missing pane: an
+/// error for `focused_pane` and `pane_command`, `None` for `plugin_url`.
 #[derive(Default)]
 struct MockHost {
     calls: Vec<HostCall>,
+    /// The client's focused pane.
+    focused: Option<PaneId>,
+    /// Per-pane answers to `pane_command`.
+    commands: HashMap<PaneId, Result<Vec<String>, String>>,
+    /// Per-pane answers to `plugin_url`.
+    plugin_urls: HashMap<PaneId, String>,
 }
 
 impl MockHost {
@@ -30,9 +49,59 @@ impl MockHost {
     }
 }
 
+// Scripting helpers. They return `&mut Self` so a world can be set up in one
+// chain, e.g. `host.focus(pane).running(pane, &["nvim", "main.rs"])`.
+#[expect(dead_code, reason = "first used by the ported tests in PLAN.md step 2")]
+impl MockHost {
+    /// Make `pane` the client's focused pane.
+    fn focus(&mut self, pane: PaneId) -> &mut Self {
+        self.focused = Some(pane);
+        self
+    }
+
+    /// Make `pane` report `argv` as its running command.
+    fn running(&mut self, pane: PaneId, argv: &[&str]) -> &mut Self {
+        let argv = argv.iter().map(ToString::to_string).collect();
+        self.commands.insert(pane, Ok(argv));
+        self
+    }
+
+    /// Make the command query for `pane` fail, as for a closing pane or a timeout.
+    fn failing(&mut self, pane: PaneId) -> &mut Self {
+        let error = format!("Could not retrieve running command for pane {pane:?}");
+        self.commands.insert(pane, Err(error));
+        self
+    }
+
+    /// Make `pane` a plugin pane loaded from `url`.
+    fn plugin(&mut self, pane: PaneId, url: &str) -> &mut Self {
+        self.plugin_urls.insert(pane, url.to_string());
+        self
+    }
+}
+
 impl Host for MockHost {
     fn list_clients(&mut self) {
         self.calls.push(HostCall::ListClients);
+    }
+
+    fn focused_pane(&mut self) -> Result<PaneId, String> {
+        self.calls.push(HostCall::FocusedPane);
+        self.focused
+            .ok_or_else(|| "No active pane found for client".to_string())
+    }
+
+    fn pane_command(&mut self, pane: PaneId) -> Result<Vec<String>, String> {
+        self.calls.push(HostCall::PaneCommand(pane));
+        self.commands
+            .get(&pane)
+            .cloned()
+            .unwrap_or_else(|| Err(format!("Terminal pane {pane:?} not found or not running")))
+    }
+
+    fn plugin_url(&mut self, pane: PaneId) -> Option<String> {
+        self.calls.push(HostCall::PluginUrl(pane));
+        self.plugin_urls.get(&pane).cloned()
     }
 
     fn set_timeout(&mut self, seconds: f64) {
