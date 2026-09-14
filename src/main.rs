@@ -15,10 +15,7 @@ mod tests;
 /// synchronous and need `ReadApplicationState`. Only call them once that
 /// permission is granted: Zellij sends no reply to a denied query, and the
 /// shim panics waiting for one.
-#[expect(dead_code, reason = "the query methods get callers in PLAN.md step 2")]
 trait Host {
-    fn list_clients(&mut self);
-
     /// The pane this plugin instance's client has focused, in any layer,
     /// terminal or plugin.
     fn focused_pane(&mut self) -> Result<PaneId, String>;
@@ -39,10 +36,6 @@ trait Host {
 struct ZellijHost;
 
 impl Host for ZellijHost {
-    fn list_clients(&mut self) {
-        zellij_tile::shim::list_clients();
-    }
-
     fn focused_pane(&mut self) -> Result<PaneId, String> {
         // The first element is the focused tab's id (not its position,
         // despite the shim's doc comment). The pane id alone is enough.
@@ -70,21 +63,15 @@ impl Host for ZellijHost {
     }
 }
 
-/// What the plugin last saw of the focused tab and pane. Every field is
-/// unknown (`None` / empty) until the corresponding update arrives.
+/// What the plugin last saw of its client's focused pane. Both fields stay
+/// unknown (`None`) until a query for them succeeds.
 #[derive(Default)]
-struct TabPane {
-    /// Stable identity of the focused tab, used to detect tab changes. Tab
-    /// positions shift when tabs are closed or moved, so a position alone
-    /// cannot tell "the same tab" from "a different tab now at this position".
-    tab_id: Option<usize>,
-    /// Position of the focused tab, needed to look it up in a `PaneManifest`.
-    tab_pos: Option<usize>,
-    pane_id: Option<u32>,
-    /// The focused pane's last seen command; `Some("")` means no command is
-    /// running. Kept apart from `None` so that landing on an idle pane after a
-    /// tab change still counts as a change and gets assessed.
-    command: Option<String>,
+struct Focus {
+    pane: Option<PaneId>,
+    /// The argv last assessed for `pane`. A focus change resets it to `None`,
+    /// so a pane that runs the same command as the previous one still gets
+    /// assessed afresh.
+    command: Option<Vec<String>>,
 }
 
 struct State {
@@ -96,7 +83,7 @@ struct State {
     reaction_seconds: f64,
     timer_scheduled: bool,
     current_mode: InputMode,
-    latest_tab_pane: TabPane,
+    focus: Focus,
     print_to_log: bool,
 }
 
@@ -111,7 +98,7 @@ impl Default for State {
             reaction_seconds: 0.3,
             timer_scheduled: false,
             current_mode: InputMode::Normal,
-            latest_tab_pane: TabPane::default(),
+            focus: Focus::default(),
             print_to_log: false,
         }
     }
@@ -132,7 +119,6 @@ impl ZellijPlugin for State {
         ]);
         subscribe(&[
             EventType::InputReceived,
-            EventType::ListClients,
             EventType::ModeUpdate,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
@@ -161,21 +147,10 @@ fn parse_bool_config(value: &str) -> bool {
     matches!(value.trim(), "true" | "t" | "y" | "1")
 }
 
-/// The command a client's focused pane is running, or `""` if there is none.
-///
-/// Zellij reports `"N/A"` for a pane with no running command (an idle shell
-/// prompt, a plugin pane, ...). This is the only place that maps it to empty.
-fn running_command(client: &ClientInfo) -> &str {
-    match client.running_command.trim() {
-        "N/A" => "",
-        cmd => cmd,
-    }
-}
-
 /// True if `re` is set and matches any non-empty text in `texts`.
 ///
 /// An unset rule never matches, and neither does empty text, so a catch-all
-/// pattern like `.*` still leaves an idle pane (no running command) unlocked.
+/// pattern like `.*` never locks on a pane that reports no argv at all.
 fn is_match(re: Option<&Regex>, texts: [&str; 2]) -> bool {
     re.is_some_and(|re| {
         texts
@@ -255,6 +230,9 @@ impl State {
                 self.permissions_granted = matches!(permission, PermissionStatus::Granted);
                 if self.permissions_granted {
                     host.hide_self();
+                    // Zellij re-sends a remembered grant on every load, so this
+                    // is where the plugin first looks at the focused pane.
+                    self.refresh_focus(host);
                 }
             }
 
@@ -264,73 +242,19 @@ impl State {
 
             Event::ModeUpdate(mode_info) => {
                 self.current_mode = mode_info.mode;
-                self.start_timer(host);
             }
 
-            Event::TabUpdate(tab_info) => {
-                if let Some(tab) = get_focused_tab(&tab_info)
-                    && Some(tab.tab_id) != self.latest_tab_pane.tab_id
-                {
-                    self.latest_tab_pane = TabPane {
-                        tab_id: Some(tab.tab_id),
-                        tab_pos: Some(tab.position),
-                        ..Default::default()
-                    };
-                    // Zellij sends `PaneUpdate` *before* `TabUpdate` on a tab switch, so the
-                    // pane handler above has already seen (and ignored) the new tab's pane
-                    // against the old tab position. Ask for the command now rather than
-                    // waiting for the debounce timer.
-                    host.list_clients();
-                }
-            }
-
-            Event::PaneUpdate(pane_manifest) => {
-                // Until a `TabUpdate` has told us which tab is focused there is
-                // nothing to look the pane up in.
-                if let Some(tab_pos) = self.latest_tab_pane.tab_pos
-                    && let Some(pane) = get_focused_pane(tab_pos, &pane_manifest)
-                    && Some(pane.id) != self.latest_tab_pane.pane_id
-                {
-                    self.latest_tab_pane.pane_id = Some(pane.id);
-                    host.list_clients();
-                }
-            }
-
-            Event::ListClients(clients) => {
-                if !self.is_enabled {
-                    return false;
-                }
-
-                if let Some(current_client) = clients.iter().find(|client| client.is_current_client)
-                {
-                    let running_command = running_command(current_client);
-
-                    let command_changed =
-                        self.latest_tab_pane.command.as_deref() != Some(running_command);
-
-                    if command_changed {
-                        self.latest_tab_pane.command = Some(running_command.to_string());
-
-                        let target_input_mode = self.determine_target_mode(running_command);
-
-                        // Only switch if the mode is actually changing, and
-                        // if the current input mode is `Locked` or `Normal`
-                        if self.current_mode != target_input_mode
-                            && (self.current_mode == InputMode::Locked
-                                || self.current_mode == InputMode::Normal)
-                        {
-                            host.switch_to_input_mode(target_input_mode);
-                        }
-
-                        // If the command changed, perform another iteration.
-                        self.start_timer(host);
-                    }
-                }
+            // Neither payload says which pane *this* client has focused: the
+            // manifest marks a pane focused if any client focuses it, and on a
+            // tab switch `PaneUpdate` arrives before `TabUpdate`. Ask instead.
+            Event::TabUpdate(_) | Event::PaneUpdate(_) => {
+                self.refresh_focus(host);
             }
 
             Event::Timer(_t) => {
-                host.list_clients();
+                // Cleared first, so a changed command can arm a follow-up.
                 self.timer_scheduled = false;
+                self.recheck(host);
             }
 
             _ => {}
@@ -339,6 +263,8 @@ impl State {
     }
 
     fn handle_pipe(&mut self, pipe_message: PipeMessage, host: &mut impl Host) -> bool {
+        let was_enabled = self.is_enabled;
+
         if let Some(action) = pipe_message.payload.as_deref() {
             self.is_enabled = match action {
                 "enable" => true,
@@ -355,11 +281,118 @@ impl State {
         }
 
         if self.is_enabled {
-            host.list_clients();
+            if !was_enabled {
+                // Nothing was tracked while disabled, so start from scratch:
+                // the focused pane is assessed even if its command is the
+                // one last seen before disabling.
+                self.focus = Focus::default();
+            }
+            self.recheck(host);
             self.start_timer(host);
         }
 
         false // No need to render UI.
+    }
+
+    /// Whether the plugin may query Zellij and act on the answers. Queries
+    /// without `ReadApplicationState` panic (see `Host`), and a disabled
+    /// plugin leaves Zellij alone.
+    fn is_active(&self) -> bool {
+        self.permissions_granted && self.is_enabled
+    }
+
+    /// Look at the focused pane after a possible focus change: re-query which
+    /// pane is focused, and assess it only if it has not been assessed yet.
+    fn refresh_focus(&mut self, host: &mut impl Host) {
+        if !self.is_active() {
+            return;
+        }
+        self.query_focus(host);
+        if self.focus.command.is_none() {
+            self.assess_focused_pane(host);
+        }
+    }
+
+    /// Look at the focused pane again whether or not focus changed, in case
+    /// the command running in it did.
+    fn recheck(&mut self, host: &mut impl Host) {
+        if !self.is_active() {
+            return;
+        }
+        self.query_focus(host);
+        self.assess_focused_pane(host);
+    }
+
+    /// Ask Zellij which pane the client has focused. A different pane forgets
+    /// the cached command; a failed query keeps the cache as it is.
+    fn query_focus(&mut self, host: &mut impl Host) {
+        match host.focused_pane() {
+            Ok(pane) if self.focus.pane != Some(pane) => {
+                self.log(format_args!("Focused pane: {pane:?}"));
+                self.focus = Focus {
+                    pane: Some(pane),
+                    command: None,
+                };
+            }
+            Ok(_) => {}
+            Err(error) => self.log(format_args!("Could not get the focused pane: {error}")),
+        }
+    }
+
+    /// Query what the focused pane runs and assess it. Does nothing while the
+    /// focused pane is unknown.
+    fn assess_focused_pane(&mut self, host: &mut impl Host) {
+        let Some(pane) = self.focus.pane else {
+            return;
+        };
+
+        let argv = match pane {
+            PaneId::Terminal(_) => match host.pane_command(pane) {
+                Ok(argv) => argv,
+                Err(error) => {
+                    // Not the same as "nothing is running": the pane may be
+                    // closing, or the query timed out. Keep the current mode.
+                    self.log(format_args!(
+                        "Could not get the command of {pane:?}: {error}"
+                    ));
+                    return;
+                }
+            },
+            // A plugin pane runs no command. Its location goes through the
+            // same rules instead, as `list_clients` used to report it.
+            PaneId::Plugin(_) => match host.plugin_url(pane) {
+                Some(url) => vec![url],
+                None => {
+                    self.log(format_args!("Could not get the location of {pane:?}"));
+                    return;
+                }
+            },
+        };
+
+        self.assess(argv, host);
+    }
+
+    /// Act on the focused pane's command if it differs from the one last
+    /// assessed. An unchanged command is left alone, so a mode the user picked
+    /// by hand sticks until the command, or the focused pane, changes.
+    fn assess(&mut self, argv: Vec<String>, host: &mut impl Host) {
+        if self.focus.command.as_ref() == Some(&argv) {
+            return;
+        }
+
+        let target_input_mode = self.determine_target_mode(&argv);
+        self.focus.command = Some(argv);
+
+        // Only switch if the mode is actually changing, and
+        // if the current input mode is `Locked` or `Normal`
+        if self.current_mode != target_input_mode
+            && (self.current_mode == InputMode::Locked || self.current_mode == InputMode::Normal)
+        {
+            host.switch_to_input_mode(target_input_mode);
+        }
+
+        // If the command changed, look again shortly in case it changes again.
+        self.start_timer(host);
     }
 
     fn start_timer(&mut self, host: &mut impl Host) {
@@ -369,15 +402,21 @@ impl State {
         }
     }
 
-    fn determine_target_mode(&self, running_command: &str) -> InputMode {
-        let running_command_exe = running_command
-            .split_whitespace()
-            .next()
-            .and_then(|cmd| cmd.split('/').next_back())
+    /// Decide the mode for a pane running `argv`.
+    ///
+    /// Each rule is tested against the whole command line and against the
+    /// executable: the last path segment of the first argument, with any
+    /// surrounding parentheses removed (fish reports `(atuin)`). The first
+    /// argument is taken whole, so a path containing spaces stays intact.
+    fn determine_target_mode(&self, argv: &[String]) -> InputMode {
+        let command_line = argv.join(" ");
+        let executable = argv
+            .first()
+            .and_then(|first| first.split('/').next_back())
             .unwrap_or("")
             .trim_matches(['(', ')']);
 
-        let texts = [running_command, running_command_exe];
+        let texts = [command_line.as_str(), executable];
         let lock = is_match(self.lock_regex.as_ref(), texts)
             || is_match(self.lock_triggers_deprecated.as_ref(), texts);
         let ignore = is_match(self.ignore_regex.as_ref(), texts);
@@ -385,7 +424,7 @@ impl State {
         let engage = lock && !ignore;
 
         self.log(format_args!(
-            "Detected command: `{running_command}`; Executable: `{running_command_exe}`; Is trigger? {engage}."
+            "Detected command: `{command_line}`; Executable: `{executable}`; Is trigger? {engage}."
         ));
 
         if engage {
