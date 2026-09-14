@@ -10,8 +10,27 @@ mod tests;
 /// The event logic only talks to Zellij through this trait so it can be
 /// exercised in native unit tests with a recording implementation (see
 /// `tests.rs`); `ZellijHost` is the real implementation used at runtime.
+///
+/// The query methods (`focused_pane`, `pane_command`, `plugin_url`) are
+/// synchronous and need `ReadApplicationState`. Only call them once that
+/// permission is granted: Zellij sends no reply to a denied query, and the
+/// shim panics waiting for one.
+#[expect(dead_code, reason = "the query methods get callers in PLAN.md step 2")]
 trait Host {
     fn list_clients(&mut self);
+
+    /// The pane this plugin instance's client has focused, in any layer,
+    /// terminal or plugin.
+    fn focused_pane(&mut self) -> Result<PaneId, String>;
+
+    /// The argv running in a terminal pane: its foreground process if one is
+    /// running, else the pane's own process (e.g. the idle shell). Errors for
+    /// plugin panes, unknown panes, and query timeouts.
+    fn pane_command(&mut self, pane: PaneId) -> Result<Vec<String>, String>;
+
+    /// Where a plugin pane was loaded from, e.g. `zellij:session-manager`.
+    fn plugin_url(&mut self, pane: PaneId) -> Option<String>;
+
     fn set_timeout(&mut self, seconds: f64);
     fn switch_to_input_mode(&mut self, mode: InputMode);
     fn hide_self(&mut self);
@@ -22,6 +41,20 @@ struct ZellijHost;
 impl Host for ZellijHost {
     fn list_clients(&mut self) {
         zellij_tile::shim::list_clients();
+    }
+
+    fn focused_pane(&mut self) -> Result<PaneId, String> {
+        // The first element is the focused tab's id (not its position,
+        // despite the shim's doc comment). The pane id alone is enough.
+        zellij_tile::shim::get_focused_pane_info().map(|(_tab_id, pane)| pane)
+    }
+
+    fn pane_command(&mut self, pane: PaneId) -> Result<Vec<String>, String> {
+        zellij_tile::shim::get_pane_running_command(pane)
+    }
+
+    fn plugin_url(&mut self, pane: PaneId) -> Option<String> {
+        zellij_tile::shim::get_pane_info(pane)?.plugin_url
     }
 
     fn set_timeout(&mut self, seconds: f64) {
