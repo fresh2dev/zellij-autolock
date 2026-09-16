@@ -135,8 +135,8 @@ fn state_with(config: &[(&str, &str)]) -> State {
 fn started(config: &[(&str, &str)], host: &mut MockHost) -> State {
     let mut state = state_with(config);
     state.handle_event(granted(), host);
-    if state.timer_scheduled {
-        state.handle_event(Event::Timer(0.3), host);
+    if state.recheck_scheduled {
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), host);
     }
     host.drain();
     state
@@ -434,7 +434,6 @@ mod config {
             Some("^(zellij|atuin history start.*)$")
         );
         assert_eq!(pattern(&state.lock_triggers_deprecated), None);
-        assert_eq!(state.reaction_seconds, 0.3);
     }
 
     #[test]
@@ -444,7 +443,6 @@ mod config {
             ("lock_regex", "^(vim|htop)$"),
             ("ignore_regex", "^zellij$"),
             ("triggers", "less|more"),
-            ("reaction_seconds", "1.5"),
             ("print_to_log", "true"),
         ]);
         assert!(!state.is_enabled);
@@ -455,7 +453,6 @@ mod config {
             pattern(&state.lock_triggers_deprecated),
             Some("^(less|more)$")
         );
-        assert_eq!(state.reaction_seconds, 1.5);
     }
 
     #[test]
@@ -465,21 +462,6 @@ mod config {
         }
         for falsy in ["false", "f", "n", "0", "", "yes", "TRUE", "on"] {
             assert!(!parse_bool_config(falsy), "{falsy:?}");
-        }
-    }
-
-    #[test]
-    fn reaction_seconds_must_be_a_finite_non_negative_number() {
-        // Zellij panics turning a negative, NaN, or infinite value into a
-        // `Duration`, which would silently kill the timer. Those, and anything
-        // that is not a number, keep the current value instead of panicking.
-        for invalid in ["abc", "", "0.3s", "-1", "NaN", "inf", "1e999"] {
-            let state = state_with(&[("reaction_seconds", invalid)]);
-            assert_eq!(state.reaction_seconds, 0.3, "{invalid:?}");
-        }
-        for (valid, seconds) in [("0", 0.0), (" 0.05 ", 0.05), ("2", 2.0)] {
-            let state = state_with(&[("reaction_seconds", valid)]);
-            assert_eq!(state.reaction_seconds, seconds, "{valid:?}");
         }
     }
 
@@ -499,7 +481,7 @@ mod config {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -521,7 +503,7 @@ mod config {
         state.handle_event(config_changed(&changed), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // The same block again, e.g. after saving an unrelated setting, must
@@ -539,7 +521,6 @@ mod config {
                 ("lock_regex", "^htop$"),
                 ("ignore_regex", ""),
                 ("triggers", "less"),
-                ("reaction_seconds", "1.5"),
             ],
             &mut host,
         );
@@ -553,7 +534,6 @@ mod config {
             pattern(&defaults.ignore_regex)
         );
         assert_eq!(pattern(&state.lock_triggers_deprecated), None);
-        assert_eq!(state.reaction_seconds, defaults.reaction_seconds);
     }
 
     #[test]
@@ -581,7 +561,7 @@ mod config {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -613,7 +593,7 @@ mod events {
                 HostCall::HideSelf,
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -632,11 +612,14 @@ mod events {
         );
         state.handle_event(tab_update(), &mut host);
         state.handle_event(pane_update(), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_pipe(pipe(None), &mut host);
 
         // Only the pipe's timer is armed; it needs no permission.
-        assert_eq!(host.drain(), vec![HostCall::SetTimeout(0.3)]);
+        assert_eq!(
+            host.drain(),
+            vec![HostCall::SetTimeout(RECHECK_DELAY_SECONDS)]
+        );
     }
 
     #[test]
@@ -647,7 +630,10 @@ mod events {
         state.handle_event(Event::InputReceived, &mut host);
         state.handle_event(Event::InputReceived, &mut host);
 
-        assert_eq!(host.drain(), vec![HostCall::SetTimeout(0.3)]);
+        assert_eq!(
+            host.drain(),
+            vec![HostCall::SetTimeout(RECHECK_DELAY_SECONDS)]
+        );
     }
 
     #[test]
@@ -663,13 +649,17 @@ mod events {
     }
 
     #[test]
-    fn timer_uses_configured_reaction_seconds() {
+    fn removed_reaction_seconds_key_is_ignored() {
+        // 0.2 configs may still set it; the delay is no longer configurable.
         let mut state = state_with(&[("reaction_seconds", "0.05")]);
         let mut host = MockHost::default();
 
         state.handle_event(Event::InputReceived, &mut host);
 
-        assert_eq!(host.drain(), vec![HostCall::SetTimeout(0.05)]);
+        assert_eq!(
+            host.drain(),
+            vec![HostCall::SetTimeout(RECHECK_DELAY_SECONDS)]
+        );
     }
 
     #[test]
@@ -679,12 +669,12 @@ mod events {
         let mut state = started(&[], &mut host);
 
         state.handle_event(Event::InputReceived, &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         // Same pane, same command: nothing to do, and no follow-up.
         assert_eq!(
             host.drain(),
             vec![
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
             ]
@@ -692,7 +682,10 @@ mod events {
 
         // The timer fired, so new input may schedule another one.
         state.handle_event(Event::InputReceived, &mut host);
-        assert_eq!(host.drain(), vec![HostCall::SetTimeout(0.3)]);
+        assert_eq!(
+            host.drain(),
+            vec![HostCall::SetTimeout(RECHECK_DELAY_SECONDS)]
+        );
     }
 
     #[test]
@@ -704,21 +697,21 @@ mod events {
         // Editor starts: switch to Locked and look again shortly after.
         host.running(PANE_1, &["nvim", "main.rs"]);
         state.handle_event(Event::InputReceived, &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
 
         // Zellij confirms the switch; the follow-up finds the same command.
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -726,14 +719,14 @@ mod events {
 
         // Editor exits back to the shell: switch to Normal.
         host.running(PANE_1, &["zsh"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Normal),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -747,13 +740,13 @@ mod events {
 
         // The command changed, so a follow-up check is armed, but no switch.
         host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -774,13 +767,13 @@ mod events {
 
             // The command changed, so a follow-up check is armed, but no switch.
             host.running(PANE_1, &["vim"]);
-            state.handle_event(Event::Timer(0.3), &mut host);
+            state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
             assert_eq!(
                 host.drain(),
                 vec![
                     HostCall::FocusedPane,
                     HostCall::PaneCommand(PANE_1),
-                    HostCall::SetTimeout(0.3),
+                    HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
                 ],
                 "{mode:?}"
             );
@@ -796,12 +789,12 @@ mod events {
         // vim locks; the user unlocks by hand. The next check sees the same
         // command and must not lock again.
         host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -809,11 +802,11 @@ mod events {
 
         // The reverse: back at the shell, the user locks by hand and stays locked.
         host.running(PANE_1, &["zsh"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -845,7 +838,7 @@ mod events {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_2),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
         state.handle_event(tab_update(), &mut host);
@@ -863,10 +856,10 @@ mod events {
         // Pane 1 runs vim; the user manually unlocks, which must be respected
         // while the command stays the same.
         host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // Moving to pane 2, which also runs vim, is a fresh assessment: lock.
@@ -878,7 +871,7 @@ mod events {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_2),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -895,7 +888,7 @@ mod events {
         host.focus(PANE_2);
         state.handle_event(tab_update(), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // Back to the first tab, whose shell is idle: unlock.
@@ -907,7 +900,7 @@ mod events {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Normal),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -928,7 +921,7 @@ mod events {
                 HostCall::FocusedPane,
                 HostCall::PluginUrl(PLUGIN_PANE),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -939,14 +932,14 @@ mod events {
         host.focus(PANE_1).running(PANE_1, &["zsh"]);
         let mut state = started(&[], &mut host);
         host.running(PANE_1, &["nvim", "main.rs"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // A failed query is not "nothing is running": no switch, no follow-up.
         host.failing(PANE_1);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -954,7 +947,7 @@ mod events {
 
         // Nor did it reset the cache: the editor, seen again, is no change.
         host.running(PANE_1, &["nvim", "main.rs"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -973,14 +966,14 @@ mod events {
 
         // Checks go on with the pane last known to be focused.
         host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -998,7 +991,7 @@ mod events {
         );
 
         // A check asks again rather than guessing.
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(host.drain(), vec![HostCall::FocusedPane]);
 
         // Once Zellij answers, the pane is assessed.
@@ -1010,7 +1003,7 @@ mod events {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1044,13 +1037,13 @@ mod command_changed {
             host.drain(),
             vec![
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
 
         // Zellij confirms the switch; the follow-up check finds the same command.
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         assert_eq!(
             host.drain(),
             vec![HostCall::FocusedPane, HostCall::PaneCommand(PANE_1)]
@@ -1064,7 +1057,7 @@ mod command_changed {
             host.drain(),
             vec![
                 HostCall::SwitchToInputMode(InputMode::Normal),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1086,7 +1079,7 @@ mod command_changed {
             host.drain(),
             vec![
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1109,7 +1102,7 @@ mod command_changed {
             host.drain(),
             vec![
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1145,9 +1138,9 @@ mod command_changed {
         // The check after `nvim⏎` sees the editor and locks...
         host.running(PANE_1, &["nvim", "main.rs"]);
         state.handle_event(Event::InputReceived, &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // ...so Zellij's event for the same change, up to a second later, does nothing.
@@ -1168,7 +1161,7 @@ mod command_changed {
         state.handle_event(command_changed(PANE_1, &["vim"], true), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // The same command again changes nothing.
@@ -1186,13 +1179,13 @@ mod command_changed {
         host.running(PANE_1, &["nvim"]);
         state.handle_event(command_changed(PANE_1, &["nvim"], true), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
 
         // Focus moves to the idle pane 2: unlock.
         host.focus(PANE_2);
         state.handle_event(pane_update(), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         // The editor in pane 1 exits, and that event only arrives now.
@@ -1221,7 +1214,7 @@ mod command_changed {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_2),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1243,7 +1236,7 @@ mod pipes {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1261,7 +1254,7 @@ mod pipes {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1274,10 +1267,10 @@ mod pipes {
         host.focus(PANE_1).running(PANE_1, &["zsh"]);
         let mut state = started(&[], &mut host);
         host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_event(mode_update(InputMode::Locked), &mut host);
         state.handle_event(mode_update(InputMode::Normal), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         host.drain();
 
         state.handle_pipe(pipe(None), &mut host);
@@ -1286,7 +1279,7 @@ mod pipes {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1307,7 +1300,7 @@ mod pipes {
         state.handle_event(mode_update(InputMode::Normal), &mut host);
         state.handle_event(tab_update(), &mut host);
         state.handle_event(pane_update(), &mut host);
-        state.handle_event(Event::Timer(0.3), &mut host);
+        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
         state.handle_pipe(pipe(None), &mut host);
         assert_eq!(host.drain(), vec![]);
 
@@ -1320,7 +1313,7 @@ mod pipes {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Locked),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1346,7 +1339,7 @@ mod pipes {
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
                 HostCall::SwitchToInputMode(InputMode::Normal),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }
@@ -1368,7 +1361,7 @@ mod pipes {
             vec![
                 HostCall::FocusedPane,
                 HostCall::PaneCommand(PANE_1),
-                HostCall::SetTimeout(0.3),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
     }

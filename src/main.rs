@@ -5,6 +5,11 @@ use zellij_tile::prelude::*;
 #[cfg(test)]
 mod tests;
 
+/// How long to wait before looking at the focused pane again, after input or
+/// after its command changed. Shorter risks looking before a program has
+/// started or exited; longer slows switching down.
+const RECHECK_DELAY_SECONDS: f64 = 0.3;
+
 /// The calls this plugin makes back into Zellij.
 ///
 /// The event logic only talks to Zellij through this trait so it can be
@@ -80,8 +85,7 @@ struct State {
     lock_regex: Option<Regex>,
     lock_triggers_deprecated: Option<Regex>,
     ignore_regex: Option<Regex>,
-    reaction_seconds: f64,
-    timer_scheduled: bool,
+    recheck_scheduled: bool,
     current_mode: InputMode,
     focus: Focus,
     print_to_log: bool,
@@ -98,8 +102,7 @@ impl Default for State {
             lock_regex: Regex::new("^(vim|nvim)").ok(),
             lock_triggers_deprecated: None,
             ignore_regex: Regex::new("^(zellij|atuin history start.*)$").ok(),
-            reaction_seconds: 0.3,
-            timer_scheduled: false,
+            recheck_scheduled: false,
             current_mode: InputMode::Normal,
             focus: Focus::default(),
             print_to_log: false,
@@ -194,21 +197,6 @@ impl State {
             self.ignore_regex = self.compile_regex("ignore_regex", ignore_regex);
         }
 
-        if let Some(reaction_seconds) = configuration.get("reaction_seconds") {
-            // Zellij turns the value into a `Duration`, which panics on a
-            // negative, NaN, or infinite number. That panic would kill the
-            // timer silently, so such values are refused here.
-            match reaction_seconds.trim().parse::<f64>() {
-                Ok(seconds) if seconds.is_finite() && seconds >= 0.0 => {
-                    self.reaction_seconds = seconds;
-                }
-                _ => self.log(format_args!(
-                    "Invalid `reaction_seconds` {reaction_seconds:?}; expected a number of seconds, keeping {}.",
-                    self.reaction_seconds
-                )),
-            }
-        }
-
         self.log(format_args!("Configuration loaded."));
         self.log(format_args!("Enabled: {}", self.is_enabled));
         self.log(format_args!(
@@ -219,7 +207,6 @@ impl State {
             "Ignore Commands: {:?}",
             self.ignore_regex.as_ref().map(Regex::as_str)
         ));
-        self.log(format_args!("Reaction seconds: {}", self.reaction_seconds));
 
         self.configuration = configuration;
     }
@@ -252,7 +239,6 @@ impl State {
             lock_regex,
             lock_triggers_deprecated,
             ignore_regex,
-            reaction_seconds,
             print_to_log,
             ..
         } = State::default();
@@ -260,7 +246,6 @@ impl State {
         self.lock_regex = lock_regex;
         self.lock_triggers_deprecated = lock_triggers_deprecated;
         self.ignore_regex = ignore_regex;
-        self.reaction_seconds = reaction_seconds;
         self.print_to_log = print_to_log;
 
         self.load_configuration(configuration);
@@ -314,7 +299,7 @@ impl State {
             }
 
             Event::InputReceived => {
-                self.start_timer(host);
+                self.schedule_recheck(host);
             }
 
             Event::ModeUpdate(mode_info) => {
@@ -330,7 +315,7 @@ impl State {
 
             Event::Timer(_t) => {
                 // Cleared first, so a changed command can arm a follow-up.
-                self.timer_scheduled = false;
+                self.recheck_scheduled = false;
                 self.recheck(host);
             }
 
@@ -389,7 +374,7 @@ impl State {
                 self.focus = Focus::default();
             }
             self.recheck(host);
-            self.start_timer(host);
+            self.schedule_recheck(host);
         }
 
         false // No need to render UI.
@@ -493,13 +478,13 @@ impl State {
         }
 
         // If the command changed, look again shortly in case it changes again.
-        self.start_timer(host);
+        self.schedule_recheck(host);
     }
 
-    fn start_timer(&mut self, host: &mut impl Host) {
-        if self.is_enabled && !self.timer_scheduled {
-            host.set_timeout(self.reaction_seconds);
-            self.timer_scheduled = true;
+    fn schedule_recheck(&mut self, host: &mut impl Host) {
+        if self.is_enabled && !self.recheck_scheduled {
+            host.set_timeout(RECHECK_DELAY_SECONDS);
+            self.recheck_scheduled = true;
         }
     }
 
