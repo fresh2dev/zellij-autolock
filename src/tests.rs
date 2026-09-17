@@ -241,24 +241,76 @@ mod decision {
     use super::*;
 
     #[test]
-    fn default_lock_regex_matches_editors() {
+    fn default_config_locks_everything_but_shells() {
         let state = State::default();
-        for cmd in ["vim", "nvim", "nvim ~/notes.md", "vim -u NONE file.txt"] {
-            assert_eq!(mode_for(&state, cmd), InputMode::Locked, "{cmd}");
+        // An idle pane reports its shell, so this is the idle case.
+        assert_eq!(mode_for(&state, "/bin/zsh"), InputMode::Normal);
+        for cmd in [
+            "htop",
+            "vim",
+            "nvim ~/notes.md",
+            "less README.md",
+            "sudo vim /etc/hosts",
+            "python3",
+            "cat vim.txt",
+        ] {
+            assert_eq!(mode_for(&state, cmd), InputMode::Locked, "{cmd:?}");
         }
     }
 
     #[test]
     fn default_config_leaves_shells_and_idle_panes_unlocked() {
         let state = State::default();
-        for cmd in ["", "zsh", "/bin/zsh", "bash -l", "ls -la", "cat vim.txt"] {
+        for cmd in [
+            "",
+            "sh",
+            "dash",
+            "bash -l",
+            "/bin/zsh",
+            "/usr/bin/fish",
+            "ksh",
+            "tcsh",
+            "nu",
+            "xonsh",
+            "elvish",
+            "pwsh -NoLogo",
+            "zellij",
+            "ls -la",
+            "lsd --tree",
+            "eza --tree",
+            "starship prompt",
+            "direnv export zsh",
+            "(atuin)",
+            "atuin history start -- ls",
+        ] {
             assert_eq!(mode_for(&state, cmd), InputMode::Normal, "{cmd:?}");
         }
     }
 
     #[test]
-    fn executable_is_extracted_from_absolute_path() {
+    fn default_config_leaves_windows_shells_unlocked() {
+        // The executable keeps its extension, and Windows paths may contain spaces.
         let state = State::default();
+        for exe in [
+            r"C:\Windows\System32\cmd.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Program Files\Git\bin\bash.exe",
+        ] {
+            let argv = [exe.to_string()];
+            assert_eq!(
+                state.determine_target_mode(&argv),
+                InputMode::Normal,
+                "{exe}"
+            );
+        }
+        let argv = [r"C:\Program Files\Neovim\bin\nvim.exe".to_string()];
+        assert_eq!(state.determine_target_mode(&argv), InputMode::Locked);
+    }
+
+    #[test]
+    fn executable_is_extracted_from_absolute_path() {
+        let state = state_with(&[("lock_regex", "^nvim$")]);
         assert_eq!(
             mode_for(&state, "/usr/local/bin/nvim --clean"),
             InputMode::Locked
@@ -279,14 +331,8 @@ mod decision {
         // Issue #19: `C:\Program Files\...` used to yield `C:\Program`.
         let argv = [r"C:\Program Files\Neovim\bin\nvim.exe", "notes.md"].map(str::to_string);
 
-        // The executable is `nvim.exe`. The default `^(vim|nvim)` has no end
-        // anchor, so it locks.
-        assert_eq!(
-            State::default().determine_target_mode(&argv),
-            InputMode::Locked
-        );
-
-        // An anchored pattern has to allow for the extension.
+        // The executable is `nvim.exe`, so an anchored pattern has to allow
+        // for the extension.
         let state = state_with(&[("lock_regex", r"^nvim(\.exe)?$")]);
         assert_eq!(state.determine_target_mode(&argv), InputMode::Locked);
         let state = state_with(&[("lock_regex", "^nvim$")]);
@@ -313,8 +359,11 @@ mod decision {
 
     #[test]
     fn ignore_regex_overrides_lock_regex() {
-        let state = state_with(&[("lock_regex", ".*")]);
-        // Both default ignore patterns, tested against the full command line.
+        let state = state_with(&[
+            ("lock_regex", ".*"),
+            ("ignore_regex", "^(zellij|atuin history start.*)$"),
+        ]);
+        // Tested against the full command line as well as the executable.
         assert_eq!(mode_for(&state, "zellij"), InputMode::Normal);
         assert_eq!(
             mode_for(&state, "atuin history start -- ls"),
@@ -328,8 +377,9 @@ mod decision {
     fn custom_ignore_regex_replaces_default() {
         let state = state_with(&[("lock_regex", ".*"), ("ignore_regex", "^htop$")]);
         assert_eq!(mode_for(&state, "htop"), InputMode::Normal);
-        // The default ignore entry is gone, so `zellij` now locks.
+        // The default list is not added to it, so `zellij` and shells lock.
         assert_eq!(mode_for(&state, "zellij"), InputMode::Locked);
+        assert_eq!(mode_for(&state, "/bin/zsh"), InputMode::Locked);
     }
 
     #[test]
@@ -338,7 +388,7 @@ mod decision {
         assert_eq!(mode_for(&state, "vim"), InputMode::Normal);
 
         // An invalid ignore regex must not accidentally suppress locking either.
-        let state = state_with(&[("ignore_regex", "[")]);
+        let state = state_with(&[("lock_regex", ".*"), ("ignore_regex", "[")]);
         assert_eq!(mode_for(&state, "vim"), InputMode::Locked);
     }
 
@@ -378,6 +428,21 @@ mod decision {
 
         let state = state_with(&[("lock_regex", ".*"), ("ignore_regex", "^zsh$")]);
         assert_eq!(mode_for(&state, "/bin/zsh"), InputMode::Normal);
+    }
+
+    #[test]
+    fn readme_example_config_shows_the_defaults() {
+        // The README tells users to extend the default `ignore_regex`, so the
+        // example has to be exactly that.
+        let config = readme_config();
+        let config: Vec<(&str, &str)> = config.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let state = state_with(&config);
+        let defaults = State::default();
+        assert_eq!(pattern(&state.lock_regex), pattern(&defaults.lock_regex));
+        assert_eq!(
+            pattern(&state.ignore_regex),
+            pattern(&defaults.ignore_regex)
+        );
     }
 
     #[test]
@@ -439,12 +504,67 @@ mod config {
         let state = state_with(&[]);
         assert!(state.is_enabled);
         assert!(!state.print_to_log);
-        assert_eq!(pattern(&state.lock_regex), Some("^(vim|nvim)"));
-        assert_eq!(
-            pattern(&state.ignore_regex),
-            Some("^(zellij|atuin history start.*)$")
-        );
+        assert_eq!(pattern(&state.lock_regex), Some(".*"));
+        assert_eq!(pattern(&state.ignore_regex), Some(DEFAULT_IGNORE_REGEX));
         assert_eq!(pattern(&state.lock_triggers_deprecated), None);
+    }
+
+    #[test]
+    fn setting_any_rule_drops_every_rule_default() {
+        // `lock_regex` alone: no default shell list, so an idle shell locks.
+        let state = state_with(&[("lock_regex", ".*")]);
+        assert_eq!(pattern(&state.ignore_regex), None);
+        assert_eq!(mode_for(&state, "/bin/zsh"), InputMode::Locked);
+
+        // `ignore_regex` alone: no catch-all, so nothing locks.
+        let state = state_with(&[("ignore_regex", "^zsh$")]);
+        assert_eq!(pattern(&state.lock_regex), None);
+        assert_eq!(mode_for(&state, "htop"), InputMode::Normal);
+
+        // Empty values count as set: this block locks nothing.
+        let state = state_with(&[("lock_regex", ""), ("ignore_regex", "")]);
+        assert_eq!(pattern(&state.lock_regex), None);
+        assert_eq!(pattern(&state.ignore_regex), None);
+
+        // Other keys keep the rule defaults.
+        let state = state_with(&[("is_enabled", "true"), ("print_to_log", "false")]);
+        assert_eq!(pattern(&state.lock_regex), Some(DEFAULT_LOCK_REGEX));
+        assert_eq!(pattern(&state.ignore_regex), Some(DEFAULT_IGNORE_REGEX));
+    }
+
+    #[test]
+    fn triggers_without_lock_regex_do_not_lock_everything() {
+        // A 0.2 config lists what to lock in `triggers` alone. The catch-all
+        // default must not turn that allowlist into "lock everything".
+        let state = state_with(&[("triggers", "vim|htop")]);
+        assert_eq!(pattern(&state.lock_regex), None);
+        assert_eq!(pattern(&state.ignore_regex), None);
+        assert_eq!(mode_for(&state, "vim notes.md"), InputMode::Locked);
+        assert_eq!(mode_for(&state, "python3"), InputMode::Normal);
+        assert_eq!(mode_for(&state, "zsh"), InputMode::Normal);
+
+        // Setting both combines them, as documented.
+        let state = state_with(&[("triggers", "vim"), ("lock_regex", "^htop$")]);
+        assert_eq!(mode_for(&state, "vim"), InputMode::Locked);
+        assert_eq!(mode_for(&state, "htop"), InputMode::Locked);
+        assert_eq!(mode_for(&state, "python3"), InputMode::Normal);
+    }
+
+    #[test]
+    fn changing_to_a_triggers_only_block_drops_the_rule_defaults() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        let mut state = started(&[], &mut host);
+        assert_eq!(pattern(&state.lock_regex), Some(".*"));
+
+        state.handle_event(config_changed(&[("triggers", "vim")]), &mut host);
+        assert_eq!(pattern(&state.lock_regex), None);
+        assert_eq!(pattern(&state.ignore_regex), None);
+
+        // Removing `triggers` again brings the defaults back.
+        state.handle_event(config_changed(&[]), &mut host);
+        assert_eq!(pattern(&state.lock_regex), Some(".*"));
+        assert_eq!(pattern(&state.ignore_regex), Some(DEFAULT_IGNORE_REGEX));
     }
 
     #[test]

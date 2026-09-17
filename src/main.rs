@@ -16,6 +16,15 @@ const RECHECK_DELAY_SECONDS: f64 = 0.3;
 /// sees it produces no event for the exit, so only these checks notice it.
 const RECHECK_ROUNDS: u32 = 5;
 
+/// Lock for every command, except those `DEFAULT_IGNORE_REGEX` matches.
+const DEFAULT_LOCK_REGEX: &str = ".*";
+
+/// Common shells and prompt tooling. A pane idle at its prompt reports the
+/// shell itself, and a background plugin cannot learn Zellij's default shell,
+/// so shells must be listed here or idle panes lock. The executable keeps its
+/// extension on Windows, hence the optional `.exe`.
+const DEFAULT_IGNORE_REGEX: &str = r"^(zellij|sh|ash|dash|bash|zsh|fish|ksh|mksh|csh|tcsh|nu|xonsh|elvish|pwsh|powershell|cmd|ls|lsd|eza|starship|direnv|\(atuin\)|atuin history start.*)(\.exe)?$";
+
 /// The calls this plugin makes back into Zellij.
 ///
 /// The event logic only talks to Zellij through this trait so it can be
@@ -110,9 +119,9 @@ impl Default for State {
         Self {
             permissions_granted: false,
             is_enabled: true,
-            lock_regex: Regex::new("^(vim|nvim)").ok(),
+            lock_regex: Regex::new(DEFAULT_LOCK_REGEX).ok(),
             lock_triggers_deprecated: None,
-            ignore_regex: Regex::new("^(zellij|atuin history start.*)$").ok(),
+            ignore_regex: Regex::new(DEFAULT_IGNORE_REGEX).ok(),
             timers_pending: 0,
             rechecks_left: 0,
             current_mode: InputMode::Normal,
@@ -193,6 +202,19 @@ impl State {
 
         if let Some(is_enabled) = configuration.get("is_enabled") {
             self.is_enabled = parse_bool_config(is_enabled);
+        }
+
+        // The default rules only make sense together (lock everything, except
+        // shells). A config that sets any rule starts from none, so e.g. a 0.2
+        // `triggers` allowlist or a custom `lock_regex` does not inherit parts
+        // of the defaults.
+        if ["lock_regex", "ignore_regex", "triggers"]
+            .iter()
+            .any(|key| configuration.contains_key(*key))
+        {
+            self.lock_regex = None;
+            self.ignore_regex = None;
+            self.lock_triggers_deprecated = None;
         }
 
         if let Some(lock_regex) = configuration.get("lock_regex") {
