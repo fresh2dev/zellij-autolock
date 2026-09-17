@@ -10,6 +10,12 @@ mod tests;
 /// started or exited; longer slows switching down.
 const RECHECK_DELAY_SECONDS: f64 = 0.3;
 
+/// How many times to look again, `RECHECK_DELAY_SECONDS` apart, after the
+/// focused pane's command changed: about 1.5 s, one period of Zellij's
+/// `CommandChanged` ticker plus margin. A command that exits before the ticker
+/// sees it produces no event for the exit, so only these checks notice it.
+const RECHECK_ROUNDS: u32 = 5;
+
 /// The calls this plugin makes back into Zellij.
 ///
 /// The event logic only talks to Zellij through this trait so it can be
@@ -85,7 +91,12 @@ struct State {
     lock_regex: Option<Regex>,
     lock_triggers_deprecated: Option<Regex>,
     ignore_regex: Option<Regex>,
-    recheck_scheduled: bool,
+    /// Timers set and not yet fired. `set_timeout` cannot be cancelled, so
+    /// only the last timer set runs a check; the ones it superseded are
+    /// ignored when they fire.
+    timers_pending: u32,
+    /// Checks still due after the last command change (see `RECHECK_ROUNDS`).
+    rechecks_left: u32,
     current_mode: InputMode,
     focus: Focus,
     print_to_log: bool,
@@ -102,7 +113,8 @@ impl Default for State {
             lock_regex: Regex::new("^(vim|nvim)").ok(),
             lock_triggers_deprecated: None,
             ignore_regex: Regex::new("^(zellij|atuin history start.*)$").ok(),
-            recheck_scheduled: false,
+            timers_pending: 0,
+            rechecks_left: 0,
             current_mode: InputMode::Normal,
             focus: Focus::default(),
             print_to_log: false,
@@ -298,8 +310,11 @@ impl State {
                 }
             }
 
+            // Every input pushes the check back, so it runs a moment after
+            // the last key rather than the first (e.g. after `Enter`, not
+            // after the first letter of the command typed before it).
             Event::InputReceived => {
-                self.schedule_recheck(host);
+                self.restart_recheck(host);
             }
 
             Event::ModeUpdate(mode_info) => {
@@ -314,9 +329,17 @@ impl State {
             }
 
             Event::Timer(_t) => {
-                // Cleared first, so a changed command can arm a follow-up.
-                self.recheck_scheduled = false;
-                self.recheck(host);
+                self.timers_pending = self.timers_pending.saturating_sub(1);
+                // Otherwise a later timer superseded this one.
+                if self.timers_pending == 0 {
+                    self.rechecks_left = self.rechecks_left.saturating_sub(1);
+                    // A changed command resets `rechecks_left` and schedules
+                    // the next check itself.
+                    self.recheck(host);
+                    if self.rechecks_left > 0 {
+                        self.schedule_recheck(host);
+                    }
+                }
             }
 
             // Zellij broadcasts this to every client's plugin instance, for any
@@ -324,9 +347,7 @@ impl State {
             // round (about once a second, and only for panes that printed
             // something). Only the pane this client has focused matters. The
             // event never moves the focus cache: a late event for a pane the
-            // client just left must not pull focus back to it. An event that
-            // is older than the last query is corrected by the follow-up check
-            // that `assess` arms on any change.
+            // client just left must not pull focus back to it.
             Event::CommandChanged(pane, argv, is_foreground, _focused_client_ids)
                 if self.is_active() && self.focus.pane == Some(pane) =>
             {
@@ -337,6 +358,10 @@ impl State {
                     "Command changed in {pane:?} (foreground: {is_foreground})"
                 ));
                 self.assess(argv, host);
+                // The ticker has seen this command, so it will report the next
+                // change itself. One more check is enough, to correct an event
+                // that is older than the last query.
+                self.rechecks_left = self.rechecks_left.min(1);
             }
 
             Event::PluginConfigurationChanged(configuration) => {
@@ -477,14 +502,26 @@ impl State {
             host.switch_to_input_mode(target_input_mode);
         }
 
-        // If the command changed, look again shortly in case it changes again.
+        // The command changed, so keep looking for a while in case it
+        // changes again before Zellij's ticker notices.
+        self.rechecks_left = RECHECK_ROUNDS;
         self.schedule_recheck(host);
     }
 
+    /// Check the focused pane after `RECHECK_DELAY_SECONDS`, unless a check is
+    /// already pending.
     fn schedule_recheck(&mut self, host: &mut impl Host) {
-        if self.is_enabled && !self.recheck_scheduled {
+        if self.timers_pending == 0 {
+            self.restart_recheck(host);
+        }
+    }
+
+    /// Check the focused pane after `RECHECK_DELAY_SECONDS`, superseding any
+    /// check already pending.
+    fn restart_recheck(&mut self, host: &mut impl Host) {
+        if self.is_enabled {
             host.set_timeout(RECHECK_DELAY_SECONDS);
-            self.recheck_scheduled = true;
+            self.timers_pending += 1;
         }
     }
 
