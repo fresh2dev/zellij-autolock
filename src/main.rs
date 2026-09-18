@@ -94,6 +94,51 @@ struct Focus {
     command: Option<Vec<String>>,
 }
 
+/// Severity of a log line, lowest first. Lines below `State::log_level`
+/// are not written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Critical,
+}
+
+impl LogLevel {
+    /// Parse a configured level name, case-insensitively.
+    fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "trace" => Some(Self::Trace),
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warn" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    /// The tag written in front of each log line.
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Trace => "TRACE",
+            Self::Debug => "DEBUG",
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+            Self::Critical => "CRITICAL",
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.tag())
+    }
+}
+
 struct State {
     permissions_granted: bool,
     is_enabled: bool,
@@ -108,7 +153,7 @@ struct State {
     rechecks_left: u32,
     current_mode: InputMode,
     focus: Focus,
-    print_to_log: bool,
+    log_level: LogLevel,
     /// The configuration block last applied, to recognise the unchanged
     /// blocks Zellij sends again on unrelated config reloads.
     configuration: BTreeMap<String, String>,
@@ -126,7 +171,7 @@ impl Default for State {
             rechecks_left: 0,
             current_mode: InputMode::Normal,
             focus: Focus::default(),
-            print_to_log: false,
+            log_level: LogLevel::Info,
             configuration: BTreeMap::new(),
         }
     }
@@ -196,9 +241,24 @@ fn is_match(re: Option<&Regex>, texts: [&str; 2]) -> bool {
 impl State {
     fn load_configuration(&mut self, configuration: BTreeMap<String, String>) {
         // Parsed first so that regex compile errors below can be logged.
-        if let Some(print_to_log) = configuration.get("print_to_log") {
-            self.print_to_log = parse_bool_config(print_to_log);
+        // `print_to_log` is deprecated (an alias for `debug`), slated for
+        // removal after 0.3.0; `log_level` wins when both are set.
+        if configuration
+            .get("print_to_log")
+            .is_some_and(|value| parse_bool_config(value))
+        {
+            self.log_level = LogLevel::Debug;
         }
+        let unrecognised_log_level = match configuration.get("log_level") {
+            Some(value) => match LogLevel::parse(value) {
+                Some(level) => {
+                    self.log_level = level;
+                    None
+                }
+                None => Some(value),
+            },
+            None => None,
+        };
 
         if let Some(is_enabled) = configuration.get("is_enabled") {
             self.is_enabled = parse_bool_config(is_enabled);
@@ -231,16 +291,31 @@ impl State {
             self.ignore_regex = self.compile_regex("ignore_regex", ignore_regex);
         }
 
-        self.log(format_args!("Configuration loaded."));
-        self.log(format_args!("Enabled: {}", self.is_enabled));
-        self.log(format_args!(
-            "Lock Commands: {:?}",
-            self.lock_regex.as_ref().map(Regex::as_str)
-        ));
-        self.log(format_args!(
-            "Ignore Commands: {:?}",
-            self.ignore_regex.as_ref().map(Regex::as_str)
-        ));
+        self.log(LogLevel::Info, format_args!("Configuration loaded."));
+        if let Some(value) = unrecognised_log_level {
+            self.log(
+                LogLevel::Warn,
+                format_args!(
+                    "Unrecognised log_level {value:?}; using {}",
+                    self.log_level.tag().to_ascii_lowercase()
+                ),
+            );
+        }
+        self.log(LogLevel::Info, format_args!("Enabled: {}", self.is_enabled));
+        self.log(
+            LogLevel::Debug,
+            format_args!(
+                "Lock Commands: {:?}",
+                self.lock_regex.as_ref().map(Regex::as_str)
+            ),
+        );
+        self.log(
+            LogLevel::Debug,
+            format_args!(
+                "Ignore Commands: {:?}",
+                self.ignore_regex.as_ref().map(Regex::as_str)
+            ),
+        );
 
         self.configuration = configuration;
     }
@@ -260,7 +335,7 @@ impl State {
         if configuration == self.configuration {
             return;
         }
-        self.log(format_args!("Configuration changed."));
+        self.log(LogLevel::Info, format_args!("Configuration changed."));
 
         let was_enabled = self.is_enabled;
         // `is_enabled` is the starting state, and the pipes may have flipped
@@ -273,14 +348,14 @@ impl State {
             lock_regex,
             lock_triggers_deprecated,
             ignore_regex,
-            print_to_log,
+            log_level,
             ..
         } = State::default();
         self.is_enabled = is_enabled;
         self.lock_regex = lock_regex;
         self.lock_triggers_deprecated = lock_triggers_deprecated;
         self.ignore_regex = ignore_regex;
-        self.print_to_log = print_to_log;
+        self.log_level = log_level;
 
         self.load_configuration(configuration);
         if !is_enabled_changed {
@@ -297,10 +372,11 @@ impl State {
         self.recheck(host);
     }
 
-    /// Write one line to the Zellij log, if `print_to_log` is set.
-    fn log(&self, args: std::fmt::Arguments) {
-        if self.print_to_log {
-            eprintln!("[autolock] {args}");
+    /// Write one line to the Zellij log, tagged with its level. Lines below
+    /// `log_level` are dropped.
+    fn log(&self, level: LogLevel, args: std::fmt::Arguments) {
+        if level >= self.log_level {
+            eprintln!("[autolock] [{level}] {args}");
         }
     }
 
@@ -314,13 +390,20 @@ impl State {
         match Regex::new(pattern) {
             Ok(re) => Some(re),
             Err(e) => {
-                self.log(format_args!("Invalid `{name}` pattern {pattern:?}: {e}"));
+                self.log(
+                    LogLevel::Error,
+                    format_args!("Invalid `{name}` pattern {pattern:?}: {e}"),
+                );
                 None
             }
         }
     }
 
     fn handle_event(&mut self, event: Event, host: &mut impl Host) -> bool {
+        self.log(
+            LogLevel::Trace,
+            format_args!("Event: {}", event_name(&event)),
+        );
         match event {
             Event::PermissionRequestResult(permission) => {
                 self.permissions_granted = matches!(permission, PermissionStatus::Granted);
@@ -354,6 +437,7 @@ impl State {
                 self.timers_pending = self.timers_pending.saturating_sub(1);
                 // Otherwise a later timer superseded this one.
                 if self.timers_pending == 0 {
+                    self.log(LogLevel::Trace, format_args!("Timer fired."));
                     self.rechecks_left = self.rechecks_left.saturating_sub(1);
                     // A changed command resets `rechecks_left` and schedules
                     // the next check itself.
@@ -361,6 +445,8 @@ impl State {
                     if self.rechecks_left > 0 {
                         self.schedule_recheck(host);
                     }
+                } else {
+                    self.log(LogLevel::Trace, format_args!("Timer ignored as stale."));
                 }
             }
 
@@ -376,9 +462,10 @@ impl State {
                 // `is_foreground` is false both for a shell back at its prompt
                 // and for a command pane running its program, so it cannot mean
                 // "idle". It is only logged.
-                self.log(format_args!(
-                    "Command changed in {pane:?} (foreground: {is_foreground})"
-                ));
+                self.log(
+                    LogLevel::Debug,
+                    format_args!("Command changed in {pane:?} (foreground: {is_foreground})"),
+                );
                 self.assess(argv, host);
                 // The ticker has seen this command, so it will report the next
                 // change itself. One more check is enough, to correct an event
@@ -396,6 +483,13 @@ impl State {
     }
 
     fn handle_pipe(&mut self, pipe_message: PipeMessage, host: &mut impl Host) -> bool {
+        self.log(
+            LogLevel::Trace,
+            format_args!(
+                "Pipe {:?} received with payload {:?}",
+                pipe_message.name, pipe_message.payload
+            ),
+        );
         let was_enabled = self.is_enabled;
 
         if let Some(action) = pipe_message.payload.as_deref() {
@@ -404,13 +498,13 @@ impl State {
                 "disable" => false,
                 "toggle" => !self.is_enabled,
                 other => {
-                    self.log(format_args!(
+                    self.log(LogLevel::Warn, format_args!(
                         "Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
                     ));
                     self.is_enabled
                 }
             };
-            self.log(format_args!("Enabled: {}", self.is_enabled));
+            self.log(LogLevel::Info, format_args!("Enabled: {}", self.is_enabled));
         }
 
         if self.is_enabled {
@@ -461,14 +555,17 @@ impl State {
     fn query_focus(&mut self, host: &mut impl Host) {
         match host.focused_pane() {
             Ok(pane) if self.focus.pane != Some(pane) => {
-                self.log(format_args!("Focused pane: {pane:?}"));
+                self.log(LogLevel::Debug, format_args!("Focused pane: {pane:?}"));
                 self.focus = Focus {
                     pane: Some(pane),
                     command: None,
                 };
             }
             Ok(_) => {}
-            Err(error) => self.log(format_args!("Could not get the focused pane: {error}")),
+            Err(error) => self.log(
+                LogLevel::Error,
+                format_args!("Could not get the focused pane: {error}"),
+            ),
         }
     }
 
@@ -485,9 +582,10 @@ impl State {
                 Err(error) => {
                     // Not the same as "nothing is running": the pane may be
                     // closing, or the query timed out. Keep the current mode.
-                    self.log(format_args!(
-                        "Could not get the command of {pane:?}: {error}"
-                    ));
+                    self.log(
+                        LogLevel::Error,
+                        format_args!("Could not get the command of {pane:?}: {error}"),
+                    );
                     return;
                 }
             },
@@ -496,7 +594,10 @@ impl State {
             PaneId::Plugin(_) => match host.plugin_url(pane) {
                 Some(url) => vec![url],
                 None => {
-                    self.log(format_args!("Could not get the location of {pane:?}"));
+                    self.log(
+                        LogLevel::Error,
+                        format_args!("Could not get the location of {pane:?}"),
+                    );
                     return;
                 }
             },
@@ -514,15 +615,22 @@ impl State {
         }
 
         let target_input_mode = self.determine_target_mode(&argv);
-        self.focus.command = Some(argv);
 
         // Only switch if the mode is actually changing, and
         // if the current input mode is `Locked` or `Normal`
         if self.current_mode != target_input_mode
             && (self.current_mode == InputMode::Locked || self.current_mode == InputMode::Normal)
         {
+            self.log(
+                LogLevel::Info,
+                format_args!(
+                    "Switching to {target_input_mode:?} for `{}`",
+                    executable(&argv)
+                ),
+            );
             host.switch_to_input_mode(target_input_mode);
         }
+        self.focus.command = Some(argv);
 
         // The command changed, so keep looking for a while in case it
         // changes again before Zellij's ticker notices.
@@ -547,36 +655,54 @@ impl State {
         }
     }
 
-    /// Decide the mode for a pane running `argv`.
-    ///
-    /// Each rule is tested against the whole command line and against the
-    /// executable: the last path segment of the first argument, after `/` or
-    /// Windows' `\`, with any surrounding parentheses removed (fish reports
-    /// `(atuin)`). The first argument is taken whole, so a path containing
-    /// spaces stays intact.
+    /// Decide the mode for a pane running `argv`. Each rule is tested against
+    /// the whole command line and against the `executable`.
     fn determine_target_mode(&self, argv: &[String]) -> InputMode {
         let command_line = argv.join(" ");
-        let executable = argv
-            .first()
-            .and_then(|first| first.split(['/', '\\']).next_back())
-            .unwrap_or("")
-            .trim_matches(['(', ')']);
+        let executable = executable(argv);
 
         let texts = [command_line.as_str(), executable];
         let lock = is_match(self.lock_regex.as_ref(), texts)
             || is_match(self.lock_triggers_deprecated.as_ref(), texts);
         let ignore = is_match(self.ignore_regex.as_ref(), texts);
 
-        let engage = lock && !ignore;
-
-        self.log(format_args!(
-            "Detected command: `{command_line}`; Executable: `{executable}`; Is trigger? {engage}."
-        ));
-
-        if engage {
+        let target = if lock && !ignore {
             InputMode::Locked
         } else {
             InputMode::Normal
-        }
+        };
+
+        self.log(
+            LogLevel::Debug,
+            format_args!("Assessed `{command_line}` (executable `{executable}`): {target:?}"),
+        );
+
+        target
+    }
+}
+
+/// The executable of `argv`: the last path segment of its first argument,
+/// after `/` or Windows' `\`, with any surrounding parentheses removed
+/// (fish reports `(atuin)`). The first argument is taken whole, so a path
+/// containing spaces stays intact.
+fn executable(argv: &[String]) -> &str {
+    argv.first()
+        .and_then(|first| first.split(['/', '\\']).next_back())
+        .unwrap_or("")
+        .trim_matches(['(', ')'])
+}
+
+/// The variant name of an event, for trace logging without its payload.
+fn event_name(event: &Event) -> &'static str {
+    match event {
+        Event::PermissionRequestResult(_) => "PermissionRequestResult",
+        Event::InputReceived => "InputReceived",
+        Event::ModeUpdate(_) => "ModeUpdate",
+        Event::TabUpdate(_) => "TabUpdate",
+        Event::PaneUpdate(_) => "PaneUpdate",
+        Event::Timer(_) => "Timer",
+        Event::CommandChanged(..) => "CommandChanged",
+        Event::PluginConfigurationChanged(_) => "PluginConfigurationChanged",
+        _ => "other",
     }
 }
