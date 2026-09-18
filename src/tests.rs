@@ -503,7 +503,7 @@ mod config {
     fn defaults_when_configuration_is_empty() {
         let state = state_with(&[]);
         assert!(state.is_enabled);
-        assert!(!state.print_to_log);
+        assert_eq!(state.log_level, LogLevel::Info);
         assert_eq!(pattern(&state.lock_regex), Some(".*"));
         assert_eq!(pattern(&state.ignore_regex), Some(DEFAULT_IGNORE_REGEX));
         assert_eq!(pattern(&state.lock_triggers_deprecated), None);
@@ -527,7 +527,7 @@ mod config {
         assert_eq!(pattern(&state.ignore_regex), None);
 
         // Other keys keep the rule defaults.
-        let state = state_with(&[("is_enabled", "true"), ("print_to_log", "false")]);
+        let state = state_with(&[("is_enabled", "true"), ("log_level", "info")]);
         assert_eq!(pattern(&state.lock_regex), Some(DEFAULT_LOCK_REGEX));
         assert_eq!(pattern(&state.ignore_regex), Some(DEFAULT_IGNORE_REGEX));
     }
@@ -574,16 +574,59 @@ mod config {
             ("lock_regex", "^(vim|htop)$"),
             ("ignore_regex", "^zellij$"),
             ("triggers", "less|more"),
-            ("print_to_log", "true"),
+            ("log_level", "warn"),
         ]);
         assert!(!state.is_enabled);
-        assert!(state.print_to_log);
+        assert_eq!(state.log_level, LogLevel::Warn);
         assert_eq!(pattern(&state.lock_regex), Some("^(vim|htop)$"));
         assert_eq!(pattern(&state.ignore_regex), Some("^zellij$"));
         assert_eq!(
             pattern(&state.lock_triggers_deprecated),
             Some("^(less|more)$")
         );
+    }
+
+    #[test]
+    fn log_level_is_parsed_case_insensitively() {
+        for (name, level) in [
+            ("trace", LogLevel::Trace),
+            ("DEBUG", LogLevel::Debug),
+            ("Info", LogLevel::Info),
+            (" warn ", LogLevel::Warn),
+            ("error", LogLevel::Error),
+            ("critical", LogLevel::Critical),
+        ] {
+            let state = state_with(&[("log_level", name)]);
+            assert_eq!(state.log_level, level, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn unrecognised_log_level_keeps_the_default() {
+        let state = state_with(&[("log_level", "verbose")]);
+        assert_eq!(state.log_level, LogLevel::Info);
+        let state = state_with(&[("log_level", "")]);
+        assert_eq!(state.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn deprecated_print_to_log_true_means_debug() {
+        let state = state_with(&[("print_to_log", "true")]);
+        assert_eq!(state.log_level, LogLevel::Debug);
+        let state = state_with(&[("print_to_log", "false")]);
+        assert_eq!(state.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_beats_deprecated_print_to_log() {
+        let state = state_with(&[("print_to_log", "true"), ("log_level", "error")]);
+        assert_eq!(state.log_level, LogLevel::Error);
+        let state = state_with(&[("log_level", "error"), ("print_to_log", "true")]);
+        assert_eq!(state.log_level, LogLevel::Error);
+
+        // An unrecognised `log_level` leaves whatever the alias set in place.
+        let state = state_with(&[("print_to_log", "true"), ("log_level", "loud")]);
+        assert_eq!(state.log_level, LogLevel::Debug);
     }
 
     #[test]
