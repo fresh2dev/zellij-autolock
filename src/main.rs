@@ -422,8 +422,18 @@ impl State {
                 self.restart_recheck(host);
             }
 
+            // Other modes (Scroll, Pane, ...) are never overridden, so a pane
+            // focused or a command changed during one was not switched for.
+            // Back in Normal, look afresh. Going straight to Locked is a
+            // choice of its own and is left alone.
             Event::ModeUpdate(mode_info) => {
+                let from_other_mode =
+                    !matches!(self.current_mode, InputMode::Normal | InputMode::Locked);
                 self.current_mode = mode_info.mode;
+                if from_other_mode && self.current_mode == InputMode::Normal {
+                    self.focus.command = None;
+                    self.recheck(host);
+                }
             }
 
             // Neither payload says which pane *this* client has focused: the
