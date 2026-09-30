@@ -787,6 +787,8 @@ mod events {
         state.handle_event(tab_update(), &mut host);
         state.handle_event(pane_update(), &mut host);
         state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
+        state.handle_event(mode_update(InputMode::Scroll), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
         state.handle_pipe(pipe(None), &mut host);
 
         // Only the pipe's timer is armed; it needs no permission.
@@ -1041,7 +1043,74 @@ mod events {
                 ],
                 "{mode:?}"
             );
+
+            // Back in Normal mode, the pane is looked at afresh.
+            state.handle_event(mode_update(InputMode::Normal), &mut host);
+            assert_eq!(
+                host.drain(),
+                vec![
+                    HostCall::FocusedPane,
+                    HostCall::PaneCommand(PANE_1),
+                    HostCall::SwitchToInputMode(InputMode::Locked),
+                ],
+                "{mode:?}"
+            );
         }
+    }
+
+    #[test]
+    fn focusing_an_editor_while_scrolling_locks_once_scroll_mode_ends() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1)
+            .running(PANE_1, &["/bin/zsh"])
+            .running(PANE_2, &["nvim"]);
+        let mut state = started(&[], &mut host);
+
+        // In Scroll mode, focus moves to nvim. Scroll mode is left alone.
+        state.handle_event(mode_update(InputMode::Scroll), &mut host);
+        host.focus(PANE_2);
+        state.handle_event(pane_update(), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_2),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
+            ]
+        );
+
+        // Back in Normal mode, nvim still owns the pane: lock.
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_2),
+                HostCall::SwitchToInputMode(InputMode::Locked),
+            ]
+        );
+    }
+
+    #[test]
+    fn leaving_a_mode_straight_to_locked_is_left_alone() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1)
+            .running(PANE_1, &["nvim"])
+            .running(PANE_2, &["/bin/zsh"]);
+        let mut state = started(&[], &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+
+        // While scrolling, focus moves to a shell, which calls for Normal. The
+        // user leaves Scroll mode straight to Locked, and that choice sticks,
+        // as does unlocking by hand from there.
+        state.handle_event(mode_update(InputMode::Scroll), &mut host);
+        host.focus(PANE_2);
+        state.handle_event(pane_update(), &mut host);
+        settle(&mut state, &mut host);
+        host.drain();
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
+        assert_eq!(host.drain(), vec![]);
     }
 
     #[test]
