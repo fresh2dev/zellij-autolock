@@ -1,0 +1,39 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+# `repo: builtin` is prek-only; upstream pre-commit cannot run this file.
+# yaml-language-server: $schema=https://www.schemastore.org/prek.json
+
+repos:
+  - repo: builtin
+    hooks:
+      # --- Fixers
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      # --- Syntax: every .json file is checked as JSONC, since editor configs (zed) allow
+      # comments and trailing commas, and plain JSON is valid JSONC.
+      - id: check-jsonc
+        types: [json]
+        args: [--allow-trailing-commas]
+      - id: check-toml
+      - id: check-yaml
+      # --- Paths and symlinks
+      - id: check-case-conflict
+      - id: check-illegal-windows-names
+      - id: check-symlinks
+      - id: destroyed-symlinks
+      # --- Safety
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      - id: format
+        name: Format
+        language: system
+        entry: >
+          just format

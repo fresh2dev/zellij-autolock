@@ -1,0 +1,154 @@
+# treefmt config. treefmt finds it by searching up from the working directory,
+# so it applies anywhere in the checkout, including editor format-on-save.
+#
+# Each formatter here formats in place and accepts multiple file arguments.
+# Project-local tool configs are still honoured: stylua reads .stylua.toml,
+# ruff reads pyproject.toml / ruff.toml, rustfmt reads rustfmt.toml.
+
+# Don't fail the whole run when a formatter isn't installed on this machine.
+# A missing binary should degrade to "skipped", not to a save-time error in the
+# editor.
+allow-missing-formatter = true
+
+# Keep the editor path quiet. The default ("info") logs a line for every file
+# that matched no formatter, which is most files in a mixed repo.
+on-unmatched = "debug"
+
+# Applied on top of the walker's own filtering. In a git repo treefmt walks
+# git's file list, so ignored files are already skipped; these cover the rest.
+excludes = [
+  "*.lock",
+  "*.min.*",
+  "*.patch",
+  "*.diff",
+  "*.svg",
+  "*.png",
+  "*.jpg",
+  "*.gif",
+  "*.ico",
+  "*.pdf",
+  ".git/*",
+  "**/node_modules/*",
+  "**/vendor/*",
+  "**/target/*",
+  "**/.venv/*",
+  "**/__pycache__/*",
+  # Agent skills are vendored from upstream by the `skills` CLI.
+  "**/.agents/skills/*",
+]
+
+# ---------------------------------------------------------------- lua
+
+[formatter.stylua]
+command = "stylua"
+options = []
+includes = ["*.lua"]
+
+# ---------------------------------------------------------------- python
+#
+# Two passes: lint-fix first, then format. `priority` orders them (lower runs
+# first); without it treefmt would race two ruff invocations on the same file.
+# `--exit-zero` keeps unfixable lint violations from failing the format run —
+# reporting those is the LSP's job (basedpyright + ruff), not treefmt's.
+
+[formatter.ruff-fix]
+command = "ruff"
+options = [
+  "check",
+  "--exit-zero",
+  "--fix-only",
+  "--force-exclude",
+  "--preview",
+  "--unsafe-fixes",
+  "--extend-select=E,W,I,F,COM",
+  "--extend-fixable=E,W,I,F,COM",
+]
+includes = ["*.py", "*.pyi"]
+excludes = []
+priority = 0
+
+[formatter.ruff-format]
+command = "ruff"
+options = ["format", "--quiet", "--preview", "--force-exclude"]
+includes = [
+  "*.py",
+  "*.pyi",
+  "*.md",
+]
+excludes = []
+priority = 1
+
+# ---------------------------------------------------------------- go
+
+[formatter.gofmt]
+command = "gofmt"
+options = ["-w"]
+includes = ["*.go"]
+
+# ---------------------------------------------------------------- rust
+#
+# `--edition` must be given explicitly or rustfmt assumes 2015 and fails to
+# parse modern syntax. 2024 is the current stable edition and is a syntactic
+# superset of the older ones. Note this overrides `edition` in a project's
+# rustfmt.toml; drop to 2021 if that ever causes trouble.
+
+[formatter.rustfmt]
+command = "rustfmt"
+options = ["--config", "skip_children=true", "--edition", "2024"]
+includes = ["*.rs"]
+
+# ---------------------------------------------------------------- toml
+#
+[formatter.tombi]
+command = "tombi"
+options = ["format", "--quiet"]
+includes = ["*.toml"]
+
+# ---------------------------------------------------------------- shell
+#
+# shfmt parses zsh too, picking the dialect from the extension, the shebang or a
+# zsh startup-file name, so no `-ln` is needed. It still rejects a few zsh-only
+# forms, e.g. the short `for x (…) cmd` loop and `{ … } always { … }`.
+#
+# Dotfile names need the leading `*`: patterns match the path from the repo
+# root, and `*` also matches `/`, so `*.zshrc` covers `sub/dir/.zshrc`.
+
+[formatter.shfmt]
+command = "shfmt"
+options = ["-w", "-i", "2"]
+includes = [
+  "*.sh",
+  "*.bash",
+  "*.bashrc",
+  "*.bash_profile",
+  "*.profile",
+  "*.zsh",
+  "*.zshrc",
+  "*.zshenv",
+  "*.zprofile",
+  "*.zlogin",
+  "*.zlogout",
+]
+
+[formatter.beautysh]
+command = "beautysh"
+options = ["-i", "2"]
+includes = ["*.sh", "*.bash", "*.envrc", "*.envrc.*"]
+excludes = []
+priority = 0
+
+# `just -f` takes a single justfile, but treefmt passes every match in one call,
+# so loop over them in sh (the trailing "--" fills $0; the files become "$@").
+[formatter.just]
+command = "sh"
+options = ["-c", 'for f; do just --fmt --unstable -f "$f" || exit; done', "--"]
+includes = ["*justfile", "*.just"]
+excludes = []
+priority = 0
+
+[formatter.rumdl]
+command = "rumdl"
+options = ["fmt"]
+includes = ["*.md"]
+excludes = []
+priority = 0

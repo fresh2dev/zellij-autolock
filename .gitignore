@@ -1,2 +1,40 @@
-/target
-.aider*
+# Git
+!.gitkeep
+
+# Junk files
+*.tmp
+scratch.*
+
+# OS generated files
+.DS_store
+
+# IDEs and editors
+.vscode/settings.json
+
+# Agent files
+TODO.md
+PLAN.md
+
+# Build artifacts
+/public/
+/site/
+/dist/
+/build/
+/target/
+
+# Secret artifacts
+/secrets/
+
+# Dependencies
+/.devbox/
+/.helmwave/
+
+# Tool caches
+.cache
+.rumdl_cache
+
+# Dolt database files (added by bd init)
+.beads/
+.ralph-tui/
+.dolt/
+*.db
