@@ -1,8 +1,12 @@
-<h1 align="center">zellij-autolock</h1>
-<p align="center"><em>Seamless Zellij: modes that follow your focus</em></p>
-<h2 align="center">
-<a href="https://github.com/fresh2dev/zellij-autolock/" target="_blank">Git Repo</a>
-</h2>
+<div align="center">
+  <h1>zellij-autolock</h1>
+  <hr>
+  <img src="https://img.f2dv.com/file/imgcap/1791135128-7STQS58X0w.svg" alt="logo" width="160">
+  <p><em>Seamless Zellij: modes that follow your focus</em></p>
+  <hr>
+  <a href="https://github.com/fresh2dev/zellij-autolock/">Git Repo</a>
+  <hr>
+</div>
 
 *zellij-autolock* is a headless [Zellij](https://github.com/zellij-org/zellij) plugin (it has no UI) that checks which command is running in the focused pane and switches Zellij between its **Normal** and **Locked** input modes. When a matching program is in the foreground (Vim, Helix, fzf, ...), Zellij locks and keystrokes go to that program. At the shell prompt, Zellij unlocks and keystrokes go to Zellij. See [Zellij modes](https://zellij.dev/old-documentation/keybindings-modes).
 
@@ -10,30 +14,20 @@ This lets one key do different things depending on the pane: `Ctrl+h` can move f
 
 > This plugin reacts to user input events, but it does not -- and cannot -- read user input.
 
-```text
-+-----------------------------------------------------+
-|                  KEYBOARD INPUT                     |
-+-------------------------+---------------------------+
-                          |
-                          V
-+-----------------------------------------------------+
-|             zellij-autolock PLUGIN                  |
-|       (Detects Active Application in Pane)          |
-+-------------------------+---------------------------+
-                          |
-    +--------------------- ----------------------+
-    |                                            |
-    V [APP DETECTED: Vim, Helix, FZF]            V [NO APP DETECTED]
-+----------------------------------+   +----------------------------------+
-|      Zellij Mode: LOCKED         |   |      Zellij Mode: NORMAL         |
-|   (App Shortcuts Prioritized)    |   |   (Zellij Shortcuts Prioritized) |
-+----------------------------------+   +----------------------------------+
-          |                                      |
-          V                                      V
-+----------------------------------+   +----------------------------------+
-|     APPLICATION EXECUTION        |   |      ZELLIJ EXECUTION            |
-|     (Vim, Helix, FZF, etc.)      |   |   (Pane Mgmt, Layout, etc.)      |
-+----------------------------------+   +----------------------------------+
+```mermaid
+flowchart TD
+    subgraph autolock["zellij-autolock (watches panes, never your keys)"]
+        trigger["Focus moves, a command<br/>starts or exits, or<br/>typing pauses for 0.3 s"]
+        query["Ask Zellij what runs<br/>in the focused pane"]
+        rules{"Matches <code>lock_regex</code><br/>and not <code>ignore_regex</code>?"}
+        trigger --> query --> rules
+    end
+
+    rules -- "yes: nvim, hx, fzf, less, ..." --> locked["Zellij mode: <b>Locked</b>"]
+    rules -- "no: zsh, bash, fish, ..." --> normal["Zellij mode: <b>Normal</b>"]
+
+    locked --> app["Keys go to the program<br/><code>Ctrl+h</code> moves to the Vim window on the left"]
+    normal --> zellij["Zellij keybindings apply<br/><code>Ctrl+h</code> moves focus to the pane on the left"]
 ```
 
 ## Demo
@@ -79,6 +73,8 @@ version = "0.3.0"
 asset_pattern = "zellij-autolock.wasm"
 postinstall = 'ln -sf "$MISE_TOOL_INSTALL_PATH"/*.wasm "$HOME/.config/zellij/plugins/"'
 ```
+
+TODO: provide CLI command that will add this entry `mise config -g ...`, and also provide the CLI command to update the plugin (`mise update ...`).
 
 ### Register the plugin
 
