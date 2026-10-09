@@ -232,7 +232,7 @@ fn pipe(payload: Option<&str>) -> PipeMessage {
         name: "autolock".to_string(),
         payload: payload.map(str::to_string),
         args: BTreeMap::new(),
-        is_private: false,
+        is_private: true,
     }
 }
 
@@ -1617,6 +1617,23 @@ mod pipes {
                 HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
             ]
         );
+    }
+
+    #[test]
+    fn broadcast_pipe_is_ignored() {
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        let mut state = started(&[], &mut host);
+
+        state.handle_pipe(
+            PipeMessage {
+                is_private: false,
+                ..pipe(Some("disable"))
+            },
+            &mut host,
+        );
+        assert!(state.is_enabled);
+        assert_eq!(host.drain(), vec![]);
     }
 
     #[test]

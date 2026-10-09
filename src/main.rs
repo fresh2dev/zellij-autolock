@@ -493,6 +493,15 @@ impl State {
     }
 
     fn handle_pipe(&mut self, pipe_message: PipeMessage, host: &mut impl Host) -> bool {
+        // A pipe without a destination plugin reaches every plugin, with
+        // payloads meant for others (e.g. Claude Code hooks piping JSON).
+        if !pipe_message.is_private {
+            self.log(
+                LogLevel::Trace,
+                format_args!("Ignoring broadcast pipe {:?}", pipe_message.name),
+            );
+            return false;
+        }
         self.log(
             LogLevel::Trace,
             format_args!(
@@ -508,6 +517,8 @@ impl State {
                 "disable" => false,
                 "toggle" => !self.is_enabled,
                 other => {
+                    // Zellij rejects oversized plugin log lines, so cap the echo.
+                    let other: String = other.chars().take(80).collect();
                     self.log(LogLevel::Warn, format_args!(
                         "Unknown pipe payload {other:?}; expected `enable`, `disable`, or `toggle`."
                     ));

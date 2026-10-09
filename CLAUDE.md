@@ -158,7 +158,7 @@ default `info`; an unrecognised value keeps `info` and logs a `warn`), plus the 
 `triggers` (pipe-separated list, wrapped into `^(...)$`) and `print_to_log` (`true` means
 `log_level "debug"`; `log_level` wins if both are set), both slated for removal after 0.3.0.
 Levels: `error` for failed queries and invalid regexes, `warn` for bad config values and pipe
-payloads, `info` for config loads, enable flips, and mode switches, `debug` for focus changes,
+payloads (truncated to 80 chars), `info` for config loads, enable flips, and mode switches, `debug` for focus changes,
 assessed commands, and `CommandChanged`, `trace` for every event, timer, and pipe; `critical`
 is unused. The rule defaults are all or nothing:
 a block that sets any of `lock_regex`, `ignore_regex`, or `triggers` (even to `""`) starts with
@@ -171,7 +171,7 @@ ignored; otherwise all settings reset to defaults (removed keys revert), the blo
 pipe-toggled `is_enabled` is kept unless the block edits that key, and the pane is re-assessed.
 `InitialKeybinds` is subscribed only so `ModeUpdate` arrives without the keybinding table.
 
-**Pipes** (`pipe`): payload `enable` / `disable` / `toggle` flips `is_enabled`; any pipe message
+**Pipes** (`pipe`): broadcast pipes (`is_private == false`, i.e. no destination plugin, as sent by other tools' hooks) are dropped at trace level before anything else. For addressed pipes, payload `enable` / `disable` / `toggle` flips `is_enabled`; any pipe message
 (including no payload) triggers `recheck()` + timer when enabled. Only a disabled-to-enabled
 transition resets the focus cache, so an empty pipe cannot undo a mode set by hand. 0.2's README
 bound `Enter` to `WriteChars "\r"` plus an empty pipe for faster locking; 0.3 no longer

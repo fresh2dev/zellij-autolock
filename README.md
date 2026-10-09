@@ -302,6 +302,8 @@ zellij pipe --plugin autolock -- "enable"
 zellij pipe --plugin autolock -- "toggle"
 ```
 
+Messages must be addressed to the plugin as above. A broadcast `zellij pipe` without `--plugin` is ignored.
+
 Disabling the plugin stops it from switching modes; it does not change the current mode. Combine with `SwitchToMode` in a keybinding if you want both, as in the `Alt Shift .` example above.
 
 ## Use with Vim
