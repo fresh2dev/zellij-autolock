@@ -20,6 +20,7 @@ enum HostCall {
     SetTimeout(f64),
     SwitchToInputMode(InputMode),
     HideSelf,
+    RequestPermission,
 }
 
 /// A recording stand-in for Zellij that answers queries from a scripted world.
@@ -104,6 +105,10 @@ impl Host for MockHost {
 
     fn hide_self(&mut self) {
         self.calls.push(HostCall::HideSelf);
+    }
+
+    fn request_permission(&mut self) {
+        self.calls.push(HostCall::RequestPermission);
     }
 }
 
@@ -773,6 +778,31 @@ mod events {
     }
 
     #[test]
+    fn requests_permission_again_once_if_the_grant_never_arrived() {
+        // A session started with `zellij attach -b` drops the grant that
+        // answers `load`'s request; the first later event asks again.
+        let mut state = State::default();
+        let mut host = MockHost::default();
+        host.focus(PANE_1).running(PANE_1, &["vim"]);
+
+        state.handle_event(tab_update(), &mut host);
+        state.handle_event(pane_update(), &mut host);
+        assert_eq!(host.drain(), vec![HostCall::RequestPermission]);
+
+        state.handle_event(granted(), &mut host);
+        assert_eq!(
+            host.drain(),
+            vec![
+                HostCall::HideSelf,
+                HostCall::FocusedPane,
+                HostCall::PaneCommand(PANE_1),
+                HostCall::SwitchToInputMode(InputMode::Locked),
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS),
+            ]
+        );
+    }
+
+    #[test]
     fn no_queries_before_permission_is_granted() {
         // Zellij never answers a query the plugin lacks permission for, and
         // the shim panics waiting. Nothing may ask before the grant.
@@ -911,7 +941,8 @@ mod events {
         state.handle_event(mode_update(InputMode::Normal), &mut host);
 
         assert_eq!(state.current_mode, InputMode::Normal);
-        assert_eq!(host.drain(), vec![]);
+        // Only the one-time permission re-request.
+        assert_eq!(host.drain(), vec![HostCall::RequestPermission]);
     }
 
     #[test]
@@ -924,7 +955,10 @@ mod events {
 
         assert_eq!(
             host.drain(),
-            vec![HostCall::SetTimeout(RECHECK_DELAY_SECONDS)]
+            vec![
+                HostCall::RequestPermission,
+                HostCall::SetTimeout(RECHECK_DELAY_SECONDS)
+            ]
         );
     }
 

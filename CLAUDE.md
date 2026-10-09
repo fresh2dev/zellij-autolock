@@ -50,6 +50,10 @@ For an isolated session that leaves the real config, cache, and logs alone, poin
 about 108 characters). Pre-grant permissions in `$XDG_CACHE_HOME/zellij/permissions.kdl`; the
 node name is the bare wasm path, without `file:`. The compact layout shows `NORMAL` / `LOCKED`
 for `tmux capture-pane`. Killing tmux leaves the Zellij server running, so kill the session too.
+Without tmux, `script -q /dev/null zellij attach <session> </dev/null >/dev/null 2>&1 &` gives a
+client a pty. On macOS, also pre-grant in `$HOME/Library/Caches/org.Zellij-Contributors.Zellij/`,
+and override `ZELLIJ_CONFIG_DIR` if the real shell exports it: a config that uses
+`$ZELLIJ_CONFIG_DIR` otherwise loads the real wasm, which then waits on a hidden prompt.
 
 CI lives in `.github/workflows/`: `ci.yaml` runs `cargo fmt --check`, `cargo clippy` (with
 `RUSTFLAGS=-Dwarnings`, so any warning fails the job; `--all-targets` includes the test
@@ -114,7 +118,9 @@ argv last assessed for it; `None` until assessed).
   Afterwards `rechecks_left` is capped at 1: the ticker has seen this command and will report
   the next change, and one check still corrects an event older than the last query.
 - `PermissionRequestResult(Granted)` calls `hide_self()` and `refresh_focus()`. Zellij re-sends
-  a remembered grant on every load, so this is also the first look after a restart.
+  a remembered grant on every load, so this is also the first look after a restart. If any
+  other event arrives before a `PermissionRequestResult` (granted or denied), the plugin calls
+  `request_permission` once more (`permission_settled`); see the `attach -b` gotcha below.
 - `assess_focused_pane()` asks `get_pane_running_command` for a terminal pane (the foreground
   process via `tcgetpgrp`, else the pane's own process, so an idle shell reports itself) or
   `get_pane_info(..).plugin_url` for a plugin pane. A failed query changes nothing.
@@ -130,6 +136,11 @@ Zellij API gotchas behind this design:
 - The synchronous queries need `ReadApplicationState`. Zellij sends no reply to a denied query
   and the shim panics waiting, so every query is gated on `is_active()` (granted and enabled).
 - `get_focused_pane_info` returns the focused tab's *id*, not its position.
+- In a session created with `zellij attach -b` (no client yet; fzj does this, and its log says
+  "Starting a server without a controlling terminal"), the cached grant answering `load`'s
+  `request_permission` is replayed only to connected clients, so it is dropped (0.45.1
+  `apply_cached_events_and_resizes_for_plugin`). Other events still arrive. Reproduced in the
+  sandbox 2026-10-08; the one-time re-request on the first later event fixes it.
 - Background plugins (loaded via `load_plugins`) always get `ModeInfo.shell == None`, so the
   plugin cannot recognise an idle default shell. Shells belong in `ignore_regex`, which is why
   `DEFAULT_IGNORE_REGEX` lists common shells (with an optional `.exe`) and prompt tooling.

@@ -51,6 +51,7 @@ trait Host {
     fn set_timeout(&mut self, seconds: f64);
     fn switch_to_input_mode(&mut self, mode: InputMode);
     fn hide_self(&mut self);
+    fn request_permission(&mut self);
 }
 
 struct ZellijHost;
@@ -80,6 +81,14 @@ impl Host for ZellijHost {
 
     fn hide_self(&mut self) {
         zellij_tile::shim::hide_self();
+    }
+
+    fn request_permission(&mut self) {
+        zellij_tile::shim::request_permission(&[
+            // PermissionType::RunCommands,
+            PermissionType::ChangeApplicationState,
+            PermissionType::ReadApplicationState,
+        ]);
     }
 }
 
@@ -141,6 +150,9 @@ impl std::fmt::Display for LogLevel {
 
 struct State {
     permissions_granted: bool,
+    /// Whether a `PermissionRequestResult` arrived or the request was
+    /// repeated, so the request is repeated at most once.
+    permission_settled: bool,
     is_enabled: bool,
     lock_regex: Option<Regex>,
     lock_triggers_deprecated: Option<Regex>,
@@ -163,6 +175,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             permissions_granted: false,
+            permission_settled: false,
             is_enabled: true,
             lock_regex: Regex::new(DEFAULT_LOCK_REGEX).ok(),
             lock_triggers_deprecated: None,
@@ -185,11 +198,7 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
-        request_permission(&[
-            // PermissionType::RunCommands,
-            PermissionType::ChangeApplicationState,
-            PermissionType::ReadApplicationState,
-        ]);
+        ZellijHost.request_permission();
         subscribe(&[
             EventType::CommandChanged,
             // Subscribed only so that Zellij sends `ModeUpdate` without the
@@ -404,8 +413,21 @@ impl State {
             LogLevel::Trace,
             format_args!("Event: {}", event_name(&event)),
         );
+        if !self.permission_settled && !matches!(event, Event::PermissionRequestResult(_)) {
+            // A session started in the background (`zellij attach -b`) loads
+            // plugins before any client connects, and Zellij drops the cached
+            // grant it answers `load`'s request with. Any later event means
+            // the plugin is running, so asking again gets the grant through.
+            self.permission_settled = true;
+            self.log(
+                LogLevel::Debug,
+                format_args!("No permission result yet; requesting again."),
+            );
+            host.request_permission();
+        }
         match event {
             Event::PermissionRequestResult(permission) => {
+                self.permission_settled = true;
                 self.permissions_granted = matches!(permission, PermissionStatus::Granted);
                 if self.permissions_granted {
                     host.hide_self();
