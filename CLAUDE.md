@@ -141,6 +141,12 @@ Zellij API gotchas behind this design:
   `request_permission` is replayed only to connected clients, so it is dropped (0.45.1
   `apply_cached_events_and_resizes_for_plugin`). Other events still arrive. Reproduced in the
   sandbox 2026-10-08; the one-time re-request on the first later event fixes it.
+- A client that detaches or switches sessions and comes back reuses the same plugin instance
+  (same client id; 0.45.1 `wasm_bridge.rs` `remove_client` keeps the instance) in the default
+  mode, and its `PaneUpdate` arrives before its `ModeUpdate(Normal)`. While it is away, every
+  focus query fails with "Client N not found", so `query_focus` resets the focus cache and
+  `current_mode` to Normal on failure; otherwise the returning Normal looks like an unlock by
+  hand and a still-running editor stays unlocked. Reproduced in the sandbox 2026-10-14.
 - Background plugins (loaded via `load_plugins`) always get `ModeInfo.shell == None`, so the
   plugin cannot recognise an idle default shell. Shells belong in `ignore_regex`, which is why
   `DEFAULT_IGNORE_REGEX` lists common shells (with an optional `.exe`) and prompt tooling.

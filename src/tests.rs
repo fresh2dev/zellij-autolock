@@ -1342,18 +1342,23 @@ mod events {
     }
 
     #[test]
-    fn failed_focus_query_keeps_the_cached_pane() {
+    fn client_returning_to_the_session_is_locked_again() {
         let mut host = MockHost::default();
-        host.focus(PANE_1).running(PANE_1, &["zsh"]);
+        host.focus(PANE_1).running(PANE_1, &["nvim"]);
         let mut state = started(&[], &mut host);
+        state.handle_event(mode_update(InputMode::Locked), &mut host);
 
+        // The client switches to another session: focus queries fail.
         host.focused = None;
         state.handle_event(pane_update(), &mut host);
         assert_eq!(host.drain(), vec![HostCall::FocusedPane]);
 
-        // Checks go on with the pane last known to be focused.
-        host.running(PANE_1, &["vim"]);
-        state.handle_event(Event::Timer(RECHECK_DELAY_SECONDS), &mut host);
+        // It comes back to the same instance in the default mode, reported
+        // after the first `PaneUpdate`. That is not an unlock by hand, so the
+        // editor still in the pane is locked again.
+        host.focus(PANE_1);
+        state.handle_event(pane_update(), &mut host);
+        state.handle_event(mode_update(InputMode::Normal), &mut host);
         assert_eq!(
             host.drain(),
             vec![

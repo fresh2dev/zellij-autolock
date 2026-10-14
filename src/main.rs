@@ -594,7 +594,11 @@ impl State {
     }
 
     /// Ask Zellij which pane the client has focused. A different pane forgets
-    /// the cached command; a failed query keeps the cache as it is.
+    /// the cached command. A failed query resets the cache and mode as a fresh
+    /// instance would have them: it fails while the client is detached or in
+    /// another session, and a client that comes back reuses this instance in
+    /// the default mode (its `ModeUpdate` arriving after the first
+    /// `PaneUpdate`), which must not pass for an unlock by hand.
     fn query_focus(&mut self, host: &mut impl Host) {
         match host.focused_pane() {
             Ok(pane) if self.focus.pane != Some(pane) => {
@@ -605,10 +609,14 @@ impl State {
                 };
             }
             Ok(_) => {}
-            Err(error) => self.log(
-                LogLevel::Error,
-                format_args!("Could not get the focused pane: {error}"),
-            ),
+            Err(error) => {
+                self.focus = Focus::default();
+                self.current_mode = InputMode::Normal;
+                self.log(
+                    LogLevel::Error,
+                    format_args!("Could not get the focused pane: {error}"),
+                );
+            }
         }
     }
 
